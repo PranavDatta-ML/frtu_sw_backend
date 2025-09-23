@@ -1,0 +1,39 @@
+services:
+  # FastAPI
+  web:
+    image: web-app:1.0.0
+    container_name: web-service
+    hostname: web.service
+    restart: on-failure
+    command: "gunicorn manage:app --worker-class uvicorn.workers.UvicornWorker --workers 1 --worker-connections=50 --timeout=30 --keep-alive=60 --bind=${HOST:-0.0.0.0}:${PORT:-5000}"
+    env_file: ${APP_ENV_FILE:-.sample.env}
+    network_mode: host
+
+  celery_worker:
+    image: web-app:1.0.0
+    container_name: celery-service
+    command: celery -A src.celery.app worker --loglevel=info
+    env_file: ${APP_ENV_FILE:-.sample.env}
+    environment:
+      - C_FORCE_ROOT=1
+    depends_on:
+      - rabbitmq
+    network_mode: host
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    hostname: rabbitmq
+    container_name: rabbitmq
+    env_file: ${BROKER_ENV_FILE:-.sample.broker.env}
+    network_mode: host
+
+  pg:
+    image: postgres:15-alpine3.18
+    restart: always
+    container_name: pg-service
+    hostname: pg.db
+    env_file:
+      - ${PG_ENV_FILE:-.sample.pg.env}
+    network_mode: host
+    volumes:
+      - /opt/volumes/db/postgres:/var/lib/postgresql/data
