@@ -12,8 +12,8 @@ class Settings(BaseSettings):
     """
     Pydantic configuration settings for the application.
     """
-    PROJECT_NAME: str = "TASK HANDLER SERVICE"
-    PROJECT_RELEASE: str = "DAY=20240929.RELEASE=1"
+    PROJECT_NAME: str = "FRTU BACKEND SERVICE"
+    PROJECT_RELEASE: str = "DAY=20250923.RELEASE=1"
     PROJECT_VERSION: str = Field(default="0.0.0", env="PROJECT_VERSION")
 
     DEBUG: int = Field(default=1, env="DEBUG")

@@ -11,7 +11,7 @@ async def app_startup():
     Called when the application starts.
     Logs the startup event.
     """
-    await DatabaseSession.create_all()
+    #await DatabaseSession.create_all()
     log.info('Starting Application...')
     
 
