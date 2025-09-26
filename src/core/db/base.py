@@ -4,7 +4,7 @@ from sqlalchemy import insert
 from sqlalchemy import update
 from sqlalchemy import delete
 from sqlalchemy import bindparam
-from sqlalchemy import and_
+from sqlalchemy import and_, or_
 from sqlalchemy.orm.exc import NoResultFound
 
 from src import log
@@ -143,7 +143,8 @@ class ModelAdmin:
                     filters.append((getattr(cls, column) == condition[column]))
 
                 query = update(cls).where(and_(*filters)).values(**update_values)
-                log.info(f'Bulk update query with attrs={str(update_values)} conditions={str(condition)} extra={str(extra)}')
+                log.info(
+                    f'Bulk update query with attrs={str(update_values)} conditions={str(condition)} extra={str(extra)}')
                 await session.execute(query)
 
             await session.commit()
@@ -154,7 +155,7 @@ class ModelAdmin:
         return session
 
     @classmethod
-    async def select(cls, extra={}, columns=['*'], **conditions):
+    async def select(cls, extra={}, columns=['*'], use_or=False, **conditions):
         """
         Retrieve records from the database based on specified conditions, including support for 'IN', '>', '<', '>=', and '<=' queries.
 
@@ -166,6 +167,9 @@ class ModelAdmin:
         :raises NoResultFound: Raises if no records match the conditions.
         :raises Exception: Raises an exception if the select fails.
         :return: List of records matching the conditions.
+
+        Args:
+            use_or:
         """
         session = DatabaseSession.get_session(cls)
 
@@ -196,7 +200,14 @@ class ModelAdmin:
 
         try:
             log.info(f'Select query with attrs={str(conditions)} extra={str(extra)}')
-            query = select(cls).with_only_columns(*columns).where(and_(*filters))
+            if filters:
+                where_clause = or_(*filters) if use_or else and_(*filters)
+                query = select(cls).with_only_columns(*columns).where(where_clause)
+            else:
+                query = select(cls).with_only_columns(*columns)
+
+            log.info(f'Executing SQL: {str(query.compile(compile_kwargs={"literal_binds": True}))}')
+
             data = await session.execute(query)
             result = data.mappings().all()
             return result
@@ -204,7 +215,6 @@ class ModelAdmin:
             log.error(f'Failed select query due to error={str(e)} extra={str(extra)}')
             await session.rollback()
             raise e
-
 
     @classmethod
     async def delete(cls, extra={}, conditions={}):
@@ -218,7 +228,7 @@ class ModelAdmin:
         :return: The current session after the delete operation.
         """
         session = DatabaseSession.get_session(cls)
-        
+
         filters = []
 
         if len(conditions):

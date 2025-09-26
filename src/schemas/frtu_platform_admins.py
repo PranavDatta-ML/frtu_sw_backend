@@ -1,13 +1,12 @@
 from typing import Optional, Any
 from uuid import UUID
 from datetime import datetime, UTC
-from pydantic import BaseModel, EmailStr, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, EmailStr, ConfigDict, Field, model_validator
 from src.utils.security import generate_salt, hash_password
 
 
 class FRTUPlatformAdminBase(BaseModel):
     name: str = Field(..., description="Name field is required")
-    password: str = Field(..., description="Password field is required")
     mobile_no: str
     email: Optional[EmailStr] = None
     attribute: Optional[dict[str, Any]] = None
@@ -31,7 +30,6 @@ class FRTUPlatformAdminCreate(FRTUPlatformAdminBase):
         else:
             return data
 
-        # Ensure password exists
         password = data.get("password")
         if not password:
             raise ValueError("Password is required")
@@ -39,14 +37,20 @@ class FRTUPlatformAdminCreate(FRTUPlatformAdminBase):
         salt = generate_salt()
         data["salt"] = generate_salt()
         data["password_hash"] = hash_password(password, salt)
-        data.setdefault("creation_time", datetime.now(UTC))
-        data.setdefault("last_update_time", datetime.now(UTC))
+
+        now_utc_naive = datetime.now(UTC).replace(tzinfo=None)
+        data.setdefault("creation_time", now_utc_naive)
+        data.setdefault("last_update_time", now_utc_naive)
+
+        if "password" in data:
+            del data["password"]
 
         return data
 
     def to_orm(self):
-        orm_data = self.model_dump(exclude={"password"})
-        return {k: v for k, v in orm_data.items() if v is not None}
+        orm_data = self.model_dump(exclude={"password"}, exclude_none=True)
+        assert "password" not in orm_data
+        return orm_data
 
 
 class FRTUPlatformAdminUpdate(BaseModel):

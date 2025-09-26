@@ -1,5 +1,5 @@
 from fastapi import Request
-from src.schemas.frtu_devices import FRTUDeviceCreate, FRTUDeviceUpdate
+from src.schemas.frtu_devices import FRTUDeviceCreate
 from src.models.frtu_devices import FRTUDevices
 from src.utils.schema import verify_schema
 

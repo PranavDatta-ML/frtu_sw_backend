@@ -1,6 +1,5 @@
 import asyncio
 from celery import Celery
-from celery.result import AsyncResult
 from kombu import Exchange, Queue
 
 from src import log
