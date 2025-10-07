@@ -64,4 +64,8 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
 
         # Continue to the next middleware/endpoint
         response = await call_next(request)
+<<<<<<< HEAD
         return response
+=======
+        return response
+>>>>>>> 7ae3bb74c3c3357b879e38d68f3cb3324b62eb07

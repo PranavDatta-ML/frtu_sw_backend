@@ -4,7 +4,7 @@ from src import log
 from src import Settings
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import create_async_engine
 import asyncio
 
 
@@ -33,7 +33,7 @@ async def check_database_status(bind_key: str, conn_str: str) -> dict:
     except Exception as e:
         log.error(traceback.format_exc())
         return {bind_key: 'DOWN'}
-    
+
 
 async def get_version_data(settings: Settings) -> dict:
     """

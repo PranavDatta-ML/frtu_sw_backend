@@ -4,7 +4,7 @@ from sqlalchemy import insert
 from sqlalchemy import update
 from sqlalchemy import delete
 from sqlalchemy import bindparam
-from sqlalchemy import and_
+from sqlalchemy import and_, or_
 from sqlalchemy.orm.exc import NoResultFound
 
 from src import log
@@ -143,7 +143,8 @@ class ModelAdmin:
                     filters.append((getattr(cls, column) == condition[column]))
 
                 query = update(cls).where(and_(*filters)).values(**update_values)
-                log.info(f'Bulk update query with attrs={str(update_values)} conditions={str(condition)} extra={str(extra)}')
+                log.info(
+                    f'Bulk update query with attrs={str(update_values)} conditions={str(condition)} extra={str(extra)}')
                 await session.execute(query)
 
             await session.commit()
@@ -215,7 +216,6 @@ class ModelAdmin:
             await session.rollback()
             raise e
 
-
     @classmethod
     async def delete(cls, extra={}, conditions={}):
         """
@@ -228,7 +228,7 @@ class ModelAdmin:
         :return: The current session after the delete operation.
         """
         session = DatabaseSession.get_session(cls)
-        
+
         filters = []
 
         if len(conditions):

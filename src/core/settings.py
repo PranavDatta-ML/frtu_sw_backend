@@ -1,7 +1,5 @@
-import os
 from functools import lru_cache
 from typing import Dict
-from typing import List
 
 from pydantic_settings import BaseSettings
 from pydantic import Field
@@ -34,8 +32,16 @@ class Settings(BaseSettings):
     CELERY_QUEUE_NAMES: str = Field(default='http', env="ALLOWED_HOOK_PROTOCOLS")
 
     # Database binds
-    DATABASE_URI: str = Field(default="postgresql+asyncpg://postgres:***REMOVED-DB-PASSWORD-2***@localhost:55432/frtu_conf_db",
-                              env="DATABASE_URI")
+    DATABASE_URI: str = Field(
+        default="postgresql+asyncpg://postgres:***REMOVED-DB-PASSWORD-2***@localhost:55432/frtu_conf_db",
+        env="DATABASE_URI")
+
+    JWT_SECRET_KEY: str = Field(default="***REMOVED-JWT-SECRET-2***", env="JWT_SECRET")
+
+    JWT_ALGORITHM: str = Field(default="HS256", env="JWT_ALGORITHM")
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=30, env="JWT_ALGORITHM")
+    JWT_AUDIENCE: str = Field(default="www.etlab.co", env="frtu")
+    JWT_ISSUER: str = Field(default="www.etlab.co", env="frtu")
 
     DATABASE_BINDS: Dict[str, str] = {}
 

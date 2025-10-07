@@ -2,7 +2,7 @@
 from typing import Optional, Any
 from uuid import UUID
 from datetime import datetime, UTC
-from pydantic import BaseModel, EmailStr, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, EmailStr, ConfigDict, Field, model_validator
 from src.utils.security import generate_salt, hash_password
 
 class FRTUPlatformAdminBase(BaseModel):
