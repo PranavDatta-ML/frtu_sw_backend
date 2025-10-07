@@ -154,7 +154,7 @@ class ModelAdmin:
         return session
 
     @classmethod
-    async def select(cls, extra={}, columns=['*'], **conditions):
+    async def select(cls, extra={}, columns=['*'], use_or=False, **conditions):
         """
         Retrieve records from the database based on specified conditions, including support for 'IN', '>', '<', '>=', and '<=' queries.
 
@@ -166,6 +166,9 @@ class ModelAdmin:
         :raises NoResultFound: Raises if no records match the conditions.
         :raises Exception: Raises an exception if the select fails.
         :return: List of records matching the conditions.
+
+        Args:
+            use_or:
         """
         session = DatabaseSession.get_session(cls)
 
@@ -196,7 +199,14 @@ class ModelAdmin:
 
         try:
             log.info(f'Select query with attrs={str(conditions)} extra={str(extra)}')
-            query = select(cls).with_only_columns(*columns).where(and_(*filters))
+            if filters:
+                where_clause = or_(*filters) if use_or else and_(*filters)
+                query = select(cls).with_only_columns(*columns).where(where_clause)
+            else:
+                query = select(cls).with_only_columns(*columns)
+
+            log.info(f'Executing SQL: {str(query.compile(compile_kwargs={"literal_binds": True}))}')
+
             data = await session.execute(query)
             result = data.mappings().all()
             return result
