@@ -10,8 +10,9 @@ from src.models.frtu_sites import FRTUSites
 from src.models.frtu_slots import FRTUSlots
 from src.schemas.frtu_devices import FRTUDeviceCreate, FRTUDeviceUpdate
 from src.models.frtu_devices import FRTUDevices
+from src.utils.access_token import decode_token
 from src.utils.schema import verify_schema
-import jwt
+import jwt # type: ignore
 from src import Settings, HttpStatusCode
 
 
@@ -29,14 +30,6 @@ from src import Settings, HttpStatusCode
 #     except Exception as e:
 #         return HttpStatusCode.BAD_REQUEST.response(message=str(e))
 
-
-def decode_token(token: str):
-    try:
-        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.PyJWTError as e:
-        raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
 
 
 # ---------------- Create Device ----------------

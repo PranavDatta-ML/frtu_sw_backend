@@ -23,7 +23,7 @@ async def tenant_read(request: Request):
 async def tenant_update(request: Request):
     return await update_tenant(request)
 
-@router.post("/delete-tenant")
+@router.delete("/delete-tenant")
 async def tenant_delete(request: Request):
     return await delete_tenant(request)
 

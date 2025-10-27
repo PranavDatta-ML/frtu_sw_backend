@@ -8,16 +8,9 @@ from src.schemas.frtu_projects import FRTUProjectCreate
 from src.models.frtu_sites import FRTUSites
 from src.models.frtu_projects import FRTUProjects
 from src import Settings, HttpStatusCode
+from src.utils.access_token import decode_token
 from src.utils.schema import verify_schema
-import jwt
-
-def decode_token(token: str):
-    try:
-        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.PyJWTError as e:
-        raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
+import jwt # type: ignore
 
 
 # ---------------- Create Site ----------------

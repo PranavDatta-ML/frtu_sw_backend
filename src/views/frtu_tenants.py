@@ -9,6 +9,10 @@ from src.schemas.frtu_tenants import FRTUTenantCreate, FRTUTenantRead
 from src import  HttpStatusCode
 from datetime import datetime, UTC, timedelta
 from src.utils.schema import verify_schema
+from fastapi import Request, Header, HTTPException, Depends
+import jwt
+from src.config.auth_config import SECRET_KEY, ALGORITHM
+
 
 # create tenant under specific admin
 async def create_tenant(request: Request, settings: Settings):
@@ -252,10 +256,6 @@ async def delete_tenant(request: Request):
 
 
 # tenant_auth.py
-from fastapi import Request, Header, HTTPException, Depends
-import jwt
-from src.config.auth_config import SECRET_KEY, ALGORITHM
-
 def create_token(data: dict):
     return jwt.encode(data, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -295,6 +295,7 @@ async def tenant_login(request: Request, authorization: str = Header(...)):
     tenant_id = str(tenants[0]["id"])
     tenant_token = create_token({"tenant_id": tenant_id, "tenant_name": tenant_name})
     return {"tenant_token": tenant_token, "tenant_id": tenant_id, "name": tenant_name}
+
 
 
 

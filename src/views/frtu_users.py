@@ -105,10 +105,6 @@ async def get_users(request: Request):
 
 # @router.post("/user/login")
 async def login_user(request: Request):
-    """
-    Login user using email or mobile_no and password.
-    Returns JWT access token.
-    """
     try:
         payload = await request.json()
         identifier = payload.get("email") or payload.get("mobile_no")
@@ -119,7 +115,6 @@ async def login_user(request: Request):
                 message="email or mobile_no and password are required"
             )
 
-        # Fetch user
         filters = {}
         if "@" in identifier:
             filters["email"] = identifier
@@ -132,12 +127,10 @@ async def login_user(request: Request):
 
         user = users[0]
 
-        # Verify password
         password_hash = hash_password(password, user["salt"])
         if password_hash != user["password_hash"]:
             return HttpStatusCode.BAD_REQUEST.response(message="Invalid credentials")
 
-        # Generate JWT token
         token = create_access_token(sub=str(user["id"]))
 
         return HttpStatusCode.OK.response(

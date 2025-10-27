@@ -9,18 +9,11 @@ from src.models.frtu_sites import FRTUSites
 from src.schemas.frtu_projects import FRTUProjectCreate, FRTUProjectRead, FRTUProjectUpdate
 from src.models.frtu_projects import FRTUProjects
 from src import Settings, HttpStatusCode
+from src.utils.access_token import decode_token
 from src.utils.schema import verify_schema
-import jwt
+import jwt # type: ignore
 
 TENANT_ID = "d4705477-cc27-4229-a0c3-04f55c3db721"
-
-def decode_token(token: str):
-    try:
-        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.PyJWTError as e:
-        raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
 
 # ---------------- Create Project ----------------
 async def create_project(request: Request, settings: Settings, authorization: str = Header(...)):

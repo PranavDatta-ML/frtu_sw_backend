@@ -29,10 +29,11 @@ async def read_auto_discover_modules_by_slot(request: Request,name, type, slotnu
     return await update_auto_discover_modules(request, name, type, slotnumber, authorization)
 
 
-
+# -------------------- Auto Discover Modules Flow -----------------------------
 @router.get("/auto_discover_modules_msg")
 async def auto_discover_modules_msg_slot(request: Request, authorization: str = Header(..., convert_underscores=False), a_name: str = Query(...), a_type: str = Query(...), settings: Settings = Depends(Settings.get_settings)):
     return await auto_discover_modules_msg(request, authorization, a_name, a_type)
+
 
 
 
