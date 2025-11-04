@@ -1,8 +1,10 @@
 from datetime import UTC, datetime, timedelta, timezone
 from fastapi import Request, HTTPException
 from src.models.frtu_platform_admins import FRTUPlatformAdmin
+from src.schemas.auth import AuthBase
 from src.schemas.frtu_platform_admins import FRTUPlatformAdminCreate, FRTUPlatformAdminUpdate
 from src.models.frtu_devices import FRTUDevices
+from src.utils.jwt_tokens import create_access_token
 from src.utils.schema import verify_schema
 import jwt
 from src import Settings, HttpStatusCode
@@ -125,27 +127,65 @@ async def delete_admin(request: Request):
     except Exception as e:
         return HttpStatusCode.BAD_REQUEST.response(message=str(e))
 
-# admin_auth.py
-from src.config.auth_config import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
 
-def create_token(data: dict, expires_delta: timedelta = None):
-    to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+# async def admin_login(request: Request):
+#     payload = await request.json()
+#     name = payload.get("name")
+#     mobile_no = payload.get("mobile_no")
+
+#     if not name or not mobile_no:
+#         raise HTTPException(status_code=400, detail="name and mobile_no required")
+
+#     admin = await FRTUPlatformAdmin.select(name=name, mobile_no=mobile_no)
+#     if not admin:
+#         raise HTTPException(status_code=404, detail="Admin not found")
+
+#     admin_id = str(admin[0]["id"])
+#     token = create_access_token({"admin_id": admin_id, "admin_name": name})
+#     return {"token": token, "admin_id": admin_id, "name": name}
+
+
 
 async def admin_login(request: Request):
-    payload = await request.json()
-    name = payload.get("name")
-    mobile_no = payload.get("mobile_no")
+    # ok, messages, data = await verify_schema(await request.json(), AuthBase)
+    # if not ok:
+    #     return HttpStatusCode.BAD_REQUEST.response(message=messages)
 
-    if not name or not mobile_no:
-        raise HTTPException(status_code=400, detail="name and mobile_no required")
+    try:
+        payload = await request.json()
+        name = payload.get("name")
+        mobile_no = payload.get("mobile_no")
+        email = payload.get("email")
 
-    admin = await FRTUPlatformAdmin.select(name=name, mobile_no=mobile_no)
-    if not admin:
-        raise HTTPException(status_code=404, detail="Admin not found")
+        if not name or (not mobile_no and not email):
+            return HttpStatusCode.BAD_REQUEST.response(
+                message="Missing required fields: 'name' and either 'mobile_no' or 'email'."
+            )
+        condition = {"name": name}
+        admins = await FRTUPlatformAdmin.select(**condition)
+        if not admins:
+            return HttpStatusCode.NOT_FOUND.response(message="Admin not found.")
 
-    admin_id = str(admin[0]["id"])
-    token = create_token({"admin_id": admin_id, "admin_name": name})
-    return {"token": token, "admin_id": admin_id, "name": name}
+        admin = admins[0]
+        if mobile_no and admin.get("mobile_no") != mobile_no:
+            return HttpStatusCode.BAD_REQUEST.response(message="Invalid mobile number.")
+        if email and admin.get("email") != email:
+            return HttpStatusCode.BAD_REQUEST.response(message="Invalid email address.")
+
+        token = create_access_token(
+            sub=str(admin["id"]),
+            extra_claims={
+                "role": "platform_admin",
+                "name": admin["name"],
+                "mobile_no": admin["mobile_no"],
+            },
+        )
+
+        return HttpStatusCode.OK.response(
+            message="Admin login successful.",
+            data={"access_token": token, "token_type": "Bearer"},
+        )
+
+    except Exception as e:
+        return HttpStatusCode.BAD_REQUEST.response(message=str(e))
+

@@ -8,8 +8,8 @@ router = APIRouter(
 )
 
 @router.post("/create")
-async def tenant_create(request: Request, settings: Settings = Depends(Settings.get_settings)):
-    return await create_tenant(request, settings)
+async def tenant_create(request: Request,authorization: str = Header(..., convert_underscores=False), settings: Settings = Depends(Settings.get_settings)):
+    return await create_tenant(request, authorization, settings)
 
 @router.get("/get-tenants")
 async def tenant_read(request: Request):

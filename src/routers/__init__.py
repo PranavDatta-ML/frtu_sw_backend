@@ -2,6 +2,10 @@ from src.routers.base import router as BaseRouter
 from src.routers.tasks import router as TaskRouter
 from src.routers.auth import router as TenantRouter
 from src.routers.frtu_users import router as FRTUUserRouter
+from src.routers.frtu_roles import router as FRTURolesRouter
+from src.routers.frtu_permissions import router as FRTUPermissionsRouter
+from src.routers.frtu_role_permissions import router as FRTURolePermissionsRouter
+from src.routers.frtu_user_assignment import router as FRTUUserAssinmentRouter
 from src.routers.frtu_platform_admins import router as FRTUPlatformAdminRouter
 from src.routers.frtu_tenants import router as FRTUTenantRouter
 from src.routers.frtu_projects import router as FRTUProjectRouter
@@ -30,6 +34,10 @@ def include_router(app):
     app.include_router(BaseRouter, prefix='/api') 
     app.include_router(TenantRouter, prefix='')
     app.include_router(FRTUUserRouter, prefix='')
+    app.include_router(FRTURolesRouter, prefix='')
+    app.include_router(FRTUPermissionsRouter, prefix='')
+    app.include_router(FRTURolePermissionsRouter, prefix='')
+    app.include_router(FRTUUserAssinmentRouter, prefix='')
     app.include_router(FRTUPlatformAdminRouter, prefix='')
     app.include_router(FRTUTenantRouter, prefix='')
     app.include_router(FRTUProjectRouter, prefix='')
