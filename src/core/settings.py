@@ -33,7 +33,7 @@ class Settings(BaseSettings):
 
     # Database binds
     DATABASE_URI: str = Field(
-        default="postgresql+asyncpg://postgres:***REMOVED-DB-PASSWORD-2***@localhost:55432/frtu_conf_db",
+        default="postgresql+asyncpg://postgres:***REMOVED-DB-PASSWORD-2***@172.29.3.30:55432/frtu_conf_db",
         env="DATABASE_URI")
 
     JWT_SECRET_KEY: str = Field(default="***REMOVED-JWT-SECRET-2***", env="JWT_SECRET")
