@@ -52,6 +52,7 @@ class FRTUUsers(Base, ModelAdmin):
     attribute = Column(JSON, nullable=True)
     creation_time = Column(TIMESTAMP, nullable=True, server_default=func.now())
     last_update_time = Column(TIMESTAMP, nullable=True, onupdate=func.now())
+    # user_type = Column(String, nullable=False, default='regular_user')
 
 
     roles = relationship("FRTURoles", back_populates="user", cascade="all, delete-orphan")

@@ -2,6 +2,7 @@ import uuid
 from sqlalchemy import Column, DateTime, String, TIMESTAMP, JSON, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from src.core.db import Base, ModelAdmin
+from sqlalchemy.orm import relationship
 
 class FRTUTenants(Base, ModelAdmin):
     __tablename__ = "frtu_tenants"
