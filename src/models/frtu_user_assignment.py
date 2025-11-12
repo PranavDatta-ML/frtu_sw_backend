@@ -7,7 +7,6 @@ from sqlalchemy.orm import relationship
 class FRTUUserAssignment(Base, ModelAdmin):
     __tablename__ = "frtu_user_assignment"
     __bind_key__ = "public"
-    __table_args__ = {"schema": "public"}
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False)
     user_id = Column(UUID(as_uuid=True), ForeignKey("public.frtu_users.id"), nullable=False)

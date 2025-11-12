@@ -2,7 +2,10 @@ from datetime import UTC, datetime, timedelta, timezone
 import uuid
 from fastapi import Request, HTTPException
 from fastapi.params import Header
+from src.models.frtu_entities import FRTUEntities
 from src.models.frtu_platform_admins import FRTUPlatformAdmin
+from src.models.frtu_roles import FRTURoles
+from src.models.frtu_user_assignment import FRTUUserAssignment
 from src.models.frtu_users import FRTUUsers
 from src.schemas.auth import AuthBase
 from src.schemas.frtu_platform_admins import FRTUPlatformAdminCreate, FRTUPlatformAdminUpdate
@@ -12,6 +15,8 @@ from src.utils.schema import verify_schema
 import jwt
 from src import Settings, HttpStatusCode
 from src.utils.security import hash_password
+from uuid import UUID
+
 async def create(request: Request, settings: Settings):
     try:
         payload = await request.json()
@@ -132,149 +137,183 @@ async def delete_admin(request: Request):
         return HttpStatusCode.BAD_REQUEST.response(message=str(e))
 
 
-# async def admin_login(request: Request):
-#     payload = await request.json()
-#     name = payload.get("name")
-#     mobile_no = payload.get("mobile_no")
-
-#     if not name or not mobile_no:
-#         raise HTTPException(status_code=400, detail="name and mobile_no required")
-
-#     admin = await FRTUPlatformAdmin.select(name=name, mobile_no=mobile_no)
-#     if not admin:
-#         raise HTTPException(status_code=404, detail="Admin not found")
-
-#     admin_id = str(admin[0]["id"])
-#     token = create_access_token({"admin_id": admin_id, "admin_name": name})
-#     return {"token": token, "admin_id": admin_id, "name": name}
-
-# async def admin_login(request: Request):
-#     # ok, messages, data = await verify_schema(await request.json(), AuthBase)
-#     # if not ok:
-#     #     return HttpStatusCode.BAD_REQUEST.response(message=messages)
-
-#     try:
-#         payload = await request.json()
-#         name = payload.get("name")
-#         mobile_no = payload.get("mobile_no")
-#         email = payload.get("email")
-
-#         if not name or (not mobile_no and not email):
-#             return HttpStatusCode.BAD_REQUEST.response(
-#                 message="Missing required fields: 'name' and either 'mobile_no' or 'email'."
-#             )
-#         condition = {"name": name}
-#         admins = await FRTUPlatformAdmin.select(**condition)
-#         if not admins:
-#             return HttpStatusCode.NOT_FOUND.response(message="Admin not found.")
-
-#         admin = admins[0]
-#         if mobile_no and admin.get("mobile_no") != mobile_no:
-#             return HttpStatusCode.BAD_REQUEST.response(message="Invalid mobile number.")
-#         if email and admin.get("email") != email:
-#             return HttpStatusCode.BAD_REQUEST.response(message="Invalid email address.")
-
-#         token = create_access_token(
-#             sub=str(admin["id"]),
-#             extra_claims={
-#                 "role": "platform_admin",
-#                 "name": admin["name"],
-#                 "mobile_no": admin["mobile_no"],
-#             },
-#         )
-
-#         return HttpStatusCode.OK.response(
-#             message="Admin login successful.",
-#             data={"access_token": token, "token_type": "Bearer"},
-#         )
-
-#     except Exception as e:
-#         return HttpStatusCode.BAD_REQUEST.response(message=str(e))
-
-
-async def create_platform_admin(request: Request,authorization: str = Header(...)):
+async def create_platform_admin(request: Request, authorization: str = Header(...)):
     try:
         if not authorization or not authorization.startswith("Bearer "):
-            return HttpStatusCode.UNAUTHORIZED.response(
+            return HttpStatusCode.NOT_AUTHENTICATED.response(
                 message="Invalid Authorization header"
             )
 
         token = authorization.split(" ")[1]
-        token_payload = decode_access_token(token)
-        
-        # if token_payload.get("user_type") != "super_admin":
-        #     return HttpStatusCode.BAD_REQUEST.response(
-        #         message="Access denied. Only Super Admin can create Platform Admins."
-        # )
+        payload = decode_access_token(token)
 
-        payload = await request.json()
-        
-        name = payload.get("name")
-        email = payload.get("email")
-        mobile_no = payload.get("mobile_no")
-        password = payload.get("password")
-        
-        if not name or not password or (not email and not mobile_no):
-            return HttpStatusCode.BAD_REQUEST.response(
-                message="name, password, and either email or mobile_no are required"
+        user_id = payload.get("sub")
+        role_id = payload.get("role_id")
+
+        if not user_id:
+            return HttpStatusCode.NOT_AUTHENTICATED.response(
+                message="Invalid token: user_id missing"
             )
 
-        filters = {}
-        if email:
-            filters["email"] = email
-        if mobile_no:
-            filters["mobile_no"] = mobile_no
-
-        existing_users = await FRTUUsers.select(**filters)
-        if existing_users:
-            return HttpStatusCode.BAD_REQUEST.response(
-                message="User with this email or mobile_no already exists"
+        if not role_id:
+            return HttpStatusCode.NOT_AUTHENTICATED.response(
+                message="Invalid token: role_id missing"
             )
 
-        salt = uuid.uuid4().hex
-        password_hash = hash_password(password, salt)
-        
+        role_data = await FRTURoles.select(id=UUID(role_id))
+        if not role_data:
+            return HttpStatusCode.NOT_AUTHENTICATED.response(
+                message="Invalid role: role not found"
+            )
+
+        role_name = role_data[0]["name"].lower().strip()
+        if role_name not in ["admin", "super admin"]:
+            return HttpStatusCode.NOT_AUTHENTICATED.response(
+                message="Only users with role 'Admin' or 'Super Admin' can create Platform Admins."
+            )
+
+        created_by = UUID(user_id)
+
+        body = await request.json()
+        name = body.get("name")
+        email = body.get("email")
+        mobile_no = body.get("mobile_no")
+        attribute = body.get("attribute") or {}
+
+        if not name or (not email and not mobile_no):
+            return HttpStatusCode.BAD_REQUEST.response(
+                message="Name and either email or mobile_no are required."
+            )
+
+        existing = await FRTUPlatformAdmin.select(email=email) if email else []
+        if existing:
+            return HttpStatusCode.BAD_REQUEST.response(
+                message="Platform Admin already exists with this email."
+            )
+
         now = datetime.now(UTC).replace(tzinfo=None)
-        
-        user_obj = await FRTUUsers.insert(
+
+        platform_admin = await FRTUPlatformAdmin.insert(
             name=name,
             email=email or "",
             mobile_no=mobile_no or "",
-            password_hash=password_hash,
-            salt=salt,
-            # user_type='platform_admin',  
-            attribute=payload.get("attribute") or {},
+            attribute=attribute,
             creation_time=now,
             last_update_time=now,
         )
 
-        admin_profile = await FRTUPlatformAdmin.insert(
-            id=user_obj.id,  # Link to frtu_users
-            name=name,
-            email=email or "",
-            mobile_no=mobile_no or "",
-            attribute=payload.get("admin_attribute") or {},
-            creation_time=now,
-            last_update_time=now
-        )
-
-        response_data = {
-            "user_id": str(user_obj.id),
-            "admin_profile_id": str(admin_profile.id),
-            "name": user_obj.name,
-            "email": user_obj.email,
-            "mobile_no": user_obj.mobile_no,
-            # "user_type": "platform_admin",
-            "creation_time": user_obj.creation_time.isoformat()
+        entity_data = {
+            "entity_id": platform_admin.id,
+            "name": name,
+            "email_id": email or "",
+            "mobile_no": mobile_no or "",
+            "attribute": {"entity_type": "platform_admin", **(attribute or {})},
+            "created_by": created_by,
+            "creation_time": now,
+            "last_update_time": now,
         }
 
+        await FRTUEntities.insert(**entity_data)
+
         return HttpStatusCode.CREATED.response(
-            message="Platform Admin created successfully!",
-            data=response_data
+            message="Platform Admin created successfully.",
+            data={
+                "platform_admin_id": str(platform_admin.id),
+                "created_by": str(created_by),
+                "name": name,
+                "email": email,
+                "mobile_no": mobile_no,
+                "attribute": attribute,
+            },
         )
 
     except Exception as e:
         return HttpStatusCode.BAD_REQUEST.response(message=str(e))
+    
+    
+# async def create_platform_admin(request: Request, authorization: str = Header(...)):
+#     try:
+#         if not authorization or not authorization.startswith("Bearer "):
+#             return HttpStatusCode.NOT_AUTHENTICATED.response(
+#                 message="Invalid Authorization header"
+#             )
+
+#         token = authorization.split(" ")[1]
+#         payload = decode_access_token(token)
+
+#         role = payload.get("role")
+#         user_id = payload.get("sub") 
+
+#         if not role or role.strip().lower() != "admin":
+#             return HttpStatusCode.NOT_AUTHENTICATED.response(
+#                 message="Only users with role 'Admin' can create Platform Admins."
+#             )
+
+#         if not user_id:
+#             return HttpStatusCode.NOT_AUTHENTICATED.response(
+#                 message="Invalid token: user_id missing"
+#             )
+
+#         try:
+#             created_by = UUID(user_id)
+#         except Exception:
+#             return HttpStatusCode.BAD_REQUEST.response(
+#                 message="Invalid user_id format in token"
+#             )
+
+#         body = await request.json()
+#         name = body.get("name")
+#         email = body.get("email")
+#         mobile_no = body.get("mobile_no")
+#         attribute = body.get("attribute") or {}
+
+#         if not name or (not email and not mobile_no):
+#             return HttpStatusCode.BAD_REQUEST.response(
+#                 message="Name and either email or mobile_no are required."
+#             )
+#         existing = await FRTUPlatformAdmin.select(email=email) if email else []
+#         if existing:
+#             return HttpStatusCode.BAD_REQUEST.response(
+#                 message="Platform Admin already exists with this email."
+#             )
+
+#         now = datetime.now(UTC).replace(tzinfo=None)
+
+#         platform_admin = await FRTUPlatformAdmin.insert(
+#             name=name,
+#             email=email or "",
+#             mobile_no=mobile_no or "",
+#             attribute=attribute,
+#             creation_time=now,
+#             last_update_time=now,
+#         )
+#         entity_data = {
+#             "entity_id": platform_admin.id,
+#             "name": name,
+#             "email_id": email or "",
+#             "mobile_no": mobile_no or "",
+#             "attribute": {"entity_type": "platform_admin", **(attribute or {})},
+#             "created_by": created_by,   
+#             "creation_time": now,
+#             "last_update_time": now,
+#         }
+
+#         await FRTUEntities.insert(**entity_data)
+
+#         return HttpStatusCode.CREATED.response(
+#             message="Platform Admin created successfully.",
+#             data={
+#                 "platform_admin_id": str(platform_admin.id),
+#                 "created_by": str(created_by),
+#                 "name": name,
+#                 "email": email,
+#                 "mobile_no": mobile_no,
+#                 "attribute": attribute,
+#             },
+#         )
+
+#     except Exception as e:
+#         return HttpStatusCode.BAD_REQUEST.response(message=str(e))
 
 
 async def admin_login(request: Request):
@@ -328,122 +367,5 @@ async def admin_login(request: Request):
     except Exception as e:
         return HttpStatusCode.BAD_REQUEST.response(message=str(e))
 
-# async def create_platform_admin(request: Request, authorization: str = Header(...)):
-#     try:
-#         if not authorization or not authorization.startswith("Bearer "):
-#             return HttpStatusCode.UNAUTHORIZED.response(
-#                 message="Invalid Authorization header"
-#             )
 
-#         token = authorization.split(" ")[1]
-#         token_payload = decode_access_token(token)
-#         creator_user_id = token_payload.get("sub")
-
-#         if not creator_user_id:
-#             return HttpStatusCode.UNAUTHORIZED.response(
-#                 message="Invalid token"
-#             )
-
-#         creator_user_id = uuid.UUID(creator_user_id)
-
-#         # Check if creator is SUPER ADMIN using roles
-#         assignments = await FRTUUserAssignment.select(
-#             user_id=creator_user_id,
-#             columns=[FRTUUserAssignment.role_id]
-#         )
-
-#         if not assignments:
-#             return HttpStatusCode.FORBIDDEN.response(
-#                 message="Only SUPER ADMIN can create Platform Admins"
-#             )
-
-#         role_ids = [a["role_id"] for a in assignments]
-#         roles = await FRTURoles.select(id=role_ids)
-
-#         if not any(r["name"] == "SUPER_ADMIN" for r in roles):
-#             return HttpStatusCode.FORBIDDEN.response(
-#                 message="Only SUPER ADMIN can create Platform Admins"
-#             )
-
-#         # ✅ SUPER ADMIN verified
-
-#         payload = await request.json()
-        
-#         name = payload.get("name")
-#         email = payload.get("email")
-#         mobile_no = payload.get("mobile_no")
-#         password = payload.get("password")
-
-#         if not name or not password or (not email and not mobile_no):
-#             return HttpStatusCode.BAD_REQUEST.response(
-#                 message="name, password, and either email or mobile_no are required"
-#             )
-
-#         # Check if user already exists
-#         filters = {}
-#         if email:
-#             filters["email"] = email
-#         if mobile_no:
-#             filters["mobile_no"] = mobile_no
-
-#         existing_user = await FRTUUsers.select(**filters)
-#         if existing_user:
-#             return HttpStatusCode.BAD_REQUEST.response(
-#                 message="User with this email or mobile_no already exists"
-#             )
-
-#         # Create user account
-#         salt = uuid.uuid4().hex
-#         password_hash = hash_password(password, salt)
-#         now = datetime.utcnow()
-
-#         user_record = await FRTUUsers.insert(
-#             name=name,
-#             email=email or "",
-#             mobile_no=mobile_no or "",
-#             password_hash=password_hash,
-#             salt=salt,
-#             attribute=payload.get("attribute") or {},
-#             creation_time=now,
-#             last_update_time=now
-#         )
-
-#         # Create platform admin profile
-#         admin_profile = await FRTUPlatformAdmin.insert(
-#             admin_id=user_record.id,
-#             name=name,
-#             email=email or "",
-#             mobile_no=mobile_no or "",
-#             attribute=payload.get("attribute", {}).get("admin_attribute") or {},
-#             creation_time=now,
-#             last_update_time=now
-#         )
-
-#         # Optionally auto-assign PLATFORM_ADMIN role
-#         role = await FRTURoles.select(name="PLATFORM_ADMIN")
-#         if role:
-#             await FRTUUserAssignment.insert(
-#                 id=uuid.uuid4(),
-#                 user_id=user_record.id,
-#                 role_id=role[0]["id"],
-#                 scope_type="PLATFORM",
-#                 scope_id=user_record.id,
-#                 attribute={"auto_assigned": True},
-#                 creation_time=now,
-#                 last_update_time=now
-#             )
-
-#         return HttpStatusCode.CREATED.response(
-#             message="Platform Admin created successfully",
-#             data={
-#                 "user_id": str(user_record.id),
-#                 "platform_admin_id": str(admin_profile.id),
-#                 "name": user_record.name,
-#                 "email": user_record.email,
-#                 "mobile_no": user_record.mobile_no
-#             }
-#         )
-
-#     except Exception as e:
-#         return HttpStatusCode.BAD_REQUEST.response(message=str(e))
 

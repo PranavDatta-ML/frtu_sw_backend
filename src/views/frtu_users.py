@@ -421,6 +421,43 @@ async def get_user_with_roles_permissions(request: Request, name: str):
 #         return HttpStatusCode.BAD_REQUEST.response(message=str(e))
 
 
+# async def login_user(request: Request):
+#     try:
+#         ok, messages, data = await verify_schema(await request.json(), AuthBase)
+#         if not ok:
+#             return HttpStatusCode.BAD_REQUEST.response(message=messages)
+
+#         username = data.username
+#         password = data.password
+
+#         filters = {"email": username} if "@" in username else {"mobile_no": username}
+
+#         users = await FRTUUsers.select(**filters)
+#         if not users:
+#             return HttpStatusCode.BAD_REQUEST.response(message="Invalid credentials")
+
+#         user = users[0]
+
+#         if hash_password(password, user["salt"]) != user["password_hash"]:
+#             return HttpStatusCode.BAD_REQUEST.response(message="Invalid credentials")
+
+#         token = create_access_token(
+#             sub=str(user["id"]),
+#             extra_claims={
+#                 "name": user.get("name"),
+#                 "role": user.get("role"),
+#             },
+#         )
+
+#         return HttpStatusCode.OK.response(
+#             message="Login successful",
+#             data={"access_token": token},
+#         )
+
+#     except Exception as e:
+#         return HttpStatusCode.BAD_REQUEST.response(message=str(e))
+
+
 async def login_user(request: Request):
     try:
         ok, messages, data = await verify_schema(await request.json(), AuthBase)
@@ -441,22 +478,38 @@ async def login_user(request: Request):
         if hash_password(password, user["salt"]) != user["password_hash"]:
             return HttpStatusCode.BAD_REQUEST.response(message="Invalid credentials")
 
+        user_assignment = await FRTUUserAssignment.select(user_id=user["id"])
+        role_id = None
+        if user_assignment:
+            role_id = str(user_assignment[0]["role_id"])
+            # role_id = user_assignment[0]["role_id"]
+            # role = await FRTURoles.select(id=role_id)
+            # if role:
+            #     role_name = role[0]["name"]
+
+        # if not role_name:
+        #     role_name = "admin" if user["email"].endswith("@etlab.co") else "user"
+
         token = create_access_token(
             sub=str(user["id"]),
             extra_claims={
                 "name": user.get("name"),
-                "role": user.get("role"),
+                "email": user.get("email"),
+                "role_id": role_id
             },
         )
 
         return HttpStatusCode.OK.response(
             message="Login successful",
-            data={"access_token": token},
+            data={
+                "access_token": token,
+                "user_id": str(user["id"]),
+                "role_id": role_id,
+                "name": user.get("name"),
+                "email": user.get("email")
+            },
         )
 
     except Exception as e:
         return HttpStatusCode.BAD_REQUEST.response(message=str(e))
-
-
-
 
