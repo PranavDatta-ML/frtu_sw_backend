@@ -1,253 +1,56 @@
-# ============================================================================
-# FILE: views/role_permissions.py
-# Role-Permission mapping management
-# ============================================================================
 
-from fastapi import Request, Header, Depends
+from fastapi import HTTPException, Request, Header, Depends, status
 from src.models.frtu_role_permissions import FRTURolePermissions
 from src.models.frtu_roles import FRTURoles
 from src.models.frtu_permissions import FRTUPermissions
 from src.models.frtu_users import FRTUUsers
 from src.core.status_codes import HttpStatusCode
+from src.schemas.frtu_role_permissions import AssignRolePermission, FRTURolePermissionBase
 from src.utils.jwt_tokens import decode_access_token
 from src.core.settings import Settings
 from src import log
 from datetime import UTC, datetime
 import uuid
+from uuid import UUID
 
 
-# async def assign_permissions_to_role(
-#     request: Request,
-#     authorization: str = Header(...),
-#     settings: Settings = Depends(Settings.get_settings)
-# ):
-#     try:
-#         if not authorization or not authorization.startswith("Bearer "):
-#             return HttpStatusCode.UNAUTHORIZED.response(
-#                 message="Invalid Authorization header"
-#             )
-        
-#         token = authorization.split(" ")[1]
-#         token_payload = decode_access_token(token)
-#         current_user_id = token_payload.get("sub")
-        
-#         if not current_user_id:
-#             return HttpStatusCode.UNAUTHORIZED.response(
-#                 message="Invalid token"
-#             )
-        
-#         payload = await request.json()
-#         role_name = payload.get("role_name")
-#         role_id_str = payload.get("role_id")
-#         permission_ids = payload.get("permission_ids", [])
-        
-#         if not permission_ids or not isinstance(permission_ids, list):
-#             return HttpStatusCode.BAD_REQUEST.response(
-#                 message="'permission_ids' is required and must be a non-empty array"
-#             )
-        
-#         role = None
-#         if role_name:
-#             roles = await FRTURoles.select(
-#                 name=role_name,
-#                 columns=[FRTURoles.id, FRTURoles.name, FRTURoles.attribute]
-#             )
-#             if not roles:
-#                 return HttpStatusCode.NOT_FOUND.response(
-#                     message=f"Role with name '{role_name}' not found"
-#                 )
-#             role = roles[0]
-#         elif role_id_str:
-#             try:
-#                 role_id = uuid.UUID(role_id_str)
-#                 roles = await FRTURoles.select(
-#                     id=role_id,
-#                     columns=[FRTURoles.id, FRTURoles.name, FRTURoles.attribute]
-#                 )
-#                 if not roles:
-#                     return HttpStatusCode.NOT_FOUND.response(
-#                         message=f"Role with ID '{role_id_str}' not found"
-#                     )
-#                 role = roles[0]
-#             except (ValueError, AttributeError):
-#                 return HttpStatusCode.BAD_REQUEST.response(
-#                     message="Invalid role_id format"
-#                 )
-#         else:
-#             return HttpStatusCode.BAD_REQUEST.response(
-#                 message="Either 'role_name' or 'role_id' is required"
-#             )
-        
-#         role_id = role["id"]
-        
-#         is_system_role = role.get("attribute", {}).get("is_system_role", False)
-#         if is_system_role:
-#             return HttpStatusCode.FORBIDDEN.response(
-#                 message="Cannot modify permissions of system roles"
-#             )
-#         now = datetime.utcnow()
-#         assigned_count = 0
-#         already_exists_count = 0
-        
-#         for perm_id_str in permission_ids:
-#             try:
-#                 perm_id = uuid.UUID(perm_id_str)
-                
-#                 perms = await FRTUPermissions.select(
-#                     id=perm_id,
-#                     columns=[FRTUPermissions.id, FRTUPermissions.attribute]
-#                 )
-#                 if not perms:
-#                     return HttpStatusCode.BAD_REQUEST.response(
-#                         message=f"Permission '{perm_id_str}' not found"
-#                     )
-                
-#                 existing = await FRTURolePermissions.select(
-#                     role_id=role_id,
-#                     permission_id=perm_id,
-#                     columns=[FRTURolePermissions.role_id]
-#                 )
-                
-#                 if existing:
-#                     already_exists_count += 1
-#                     continue
-                
-#                 await FRTURolePermissions.insert(
-#                     role_id=role_id,
-#                     permission_id=perm_id,
-#                     creation_time=now,
-#                     last_update_time=now
-#                 )
-#                 assigned_count += 1
-                
-#             except (ValueError, AttributeError):
-#                 return HttpStatusCode.BAD_REQUEST.response(
-#                     message=f"Invalid permission ID format: {perm_id_str}"
-#                 )
-        
-#         return HttpStatusCode.OK.response(
-#             message=f"Permissions assigned to role '{role['name']}'",
-#             data={
-#                 "role_id": str(role_id),
-#                 "role_name": role["name"],
-#                 "assigned_count": assigned_count,
-#                 "already_exists_count": already_exists_count,
-#                 "total_requested": len(permission_ids)
-#             }
-#         )
-    
-#     except Exception as e:
-#         import traceback
-#         log.error(f"Failed to assign permissions to role: {traceback.format_exc()}")
-#         return HttpStatusCode.BAD_REQUEST.response(
-#             message=f"Failed to assign permissions: {str(e)}"
-#         )
+async def assign_permission_to_role(data: AssignRolePermission, assigned_by: UUID):
 
+    role = await FRTURoles.select(id=data.role_id)
+    if not role:
+        raise HTTPException(404, "Role not found")
+    role = role[0]
 
-async def assign_permissions_to_role(
-    request: Request,
-    authorization: str = Header(...),
-    settings: Settings = Depends(Settings.get_settings)
-):
-    try:
-        if not authorization or not authorization.startswith("Bearer "):
-            return HttpStatusCode.UNAUTHORIZED.response(message="Invalid Authorization header")
+    role_created_by = role.user_id
+    # if isinstance(role.attribute, dict):
+    #     role_created_by = role.attribute.get("created_by")
 
-        token = authorization.split(" ")[1]
-        token_payload = decode_access_token(token)
-        current_user_id = token_payload.get("sub")
+    perm = await FRTUPermissions.select(id=data.permission_id)
+    if not perm:
+        raise HTTPException(404, "Permission not found")
+    perm = perm[0]
 
-        if not current_user_id:
-            return HttpStatusCode.UNAUTHORIZED.response(message="Invalid token")
+    permission_created_by = perm.user_id
 
-        payload = await request.json()
-        role_id_str = payload.get("role_id")
-        permission_ids = payload.get("permission_ids", [])
+    mapping = await FRTURolePermissions.insert(
+        role_id=data.role_id,
+        permission_id=data.permission_id,
+        creation_time=datetime.utcnow(),
+        last_update_time=datetime.utcnow(),
+    )
 
-        if not role_id_str:
-            return HttpStatusCode.BAD_REQUEST.response(message="'role_id' is required")
+    return {
+        "role_id": mapping.role_id,
+        "permission_id": mapping.permission_id,
 
-        if not permission_ids or not isinstance(permission_ids, list):
-            return HttpStatusCode.BAD_REQUEST.response(
-                message="'permission_ids' must be a non-empty list"
-            )
+        "assigned_by": assigned_by,
+        "role_created_by": role_created_by,
+        "permission_created_by": permission_created_by,
 
-        try:
-            role_id = uuid.UUID(role_id_str)
-        except (ValueError, AttributeError):
-            return HttpStatusCode.BAD_REQUEST.response(message="Invalid role_id format")
+        "creation_time": mapping.creation_time,
+        "last_update_time": mapping.last_update_time,
+    }
 
-        roles = await FRTURoles.select(
-            id=role_id,
-            columns=[FRTURoles.id, FRTURoles.name, FRTURoles.attribute]
-        )
-        if not roles:
-            return HttpStatusCode.NOT_FOUND.response(message=f"Role with ID '{role_id_str}' not found")
-
-        role = roles[0]
-        role_name = role["name"]
-        is_system_role = role.get("attribute", {}).get("is_system_role", False)
-        if is_system_role:
-            return HttpStatusCode.FORBIDDEN.response(
-                message="Cannot modify permissions of system roles"
-            )
-
-        now = datetime.now(UTC).replace(tzinfo=None)
-        assigned_count = 0
-        already_exists_count = 0
-
-        for perm_id_str in permission_ids:
-            try:
-                perm_id = uuid.UUID(perm_id_str)
-
-                perms = await FRTUPermissions.select(
-                    id=perm_id,
-                    columns=[FRTUPermissions.id, FRTUPermissions.attribute]
-                )
-                if not perms:
-                    return HttpStatusCode.BAD_REQUEST.response(
-                        message=f"Permission '{perm_id_str}' not found"
-                    )
-
-                existing = await FRTURolePermissions.select(
-                    role_id=role_id,
-                    permission_id=perm_id,
-                    columns=[FRTURolePermissions.role_id]
-                )
-                if existing:
-                    already_exists_count += 1
-                    continue
-
-                await FRTURolePermissions.insert(
-                    role_id=role_id,
-                    permission_id=perm_id,
-                    creation_time=now,
-                    last_update_time=now
-                )
-                assigned_count += 1
-
-            except (ValueError, AttributeError):
-                return HttpStatusCode.BAD_REQUEST.response(
-                    message=f"Invalid permission ID format: {perm_id_str}"
-                )
-
-        return HttpStatusCode.OK.response(
-            message=f"Permissions assigned to role '{role_name}' successfully",
-            data={
-                "role_id": str(role_id),
-                "role_name": role_name,
-                "assigned_count": assigned_count,
-                "already_exists_count": already_exists_count,
-                "total_requested": len(permission_ids)
-            }
-        )
-
-    except Exception as e:
-        import traceback
-        log.error(f"Failed to assign permissions to role: {traceback.format_exc()}")
-        return HttpStatusCode.BAD_REQUEST.response(
-            message=f"Failed to assign permissions: {str(e)}"
-        )
 
 
 async def remove_permissions_from_role(

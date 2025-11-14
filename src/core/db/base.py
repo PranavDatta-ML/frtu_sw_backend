@@ -154,67 +154,110 @@ class ModelAdmin:
             raise Exception(str(e))
         return session
 
+    # @classmethod
+    # async def select(cls, extra={}, columns=['*'], use_or=False, **conditions):
+    #     """
+    #     Retrieve records from the database based on specified conditions, including support for 'IN', '>', '<', '>=', and '<=' queries.
+
+    #     :param extra: Additional parameters for logging purposes.
+    #     :param columns: Specific columns to select from the model.
+    #     :param conditions: A dictionary of conditions to filter which records to retrieve.
+    #                     - Use '__gt', '__gte', '__lt', '__lte' for comparison operators.
+    #                     - If the value is a list, an 'IN' query will be performed.
+    #     :raises NoResultFound: Raises if no records match the conditions.
+    #     :raises Exception: Raises an exception if the select fails.
+    #     :return: List of records matching the conditions.
+
+    #     Args:
+    #         use_or:
+    #     """
+    #     session = DatabaseSession.get_session(cls)
+
+    #     # Mapping of suffixes to SQLAlchemy filter operations
+    #     operator_mapping = {
+    #         '__gt': lambda col, val: col > val,
+    #         '__gte': lambda col, val: col >= val,
+    #         '__lt': lambda col, val: col < val,
+    #         '__lte': lambda col, val: col <= val,
+    #     }
+
+    #     filters = []
+
+    #     for column, value in conditions.items():
+    #         # Handle comparison operators based on suffix
+    #         for suffix, operation in operator_mapping.items():
+    #             if column.endswith(suffix):
+    #                 column_name = column[:-len(suffix)]  # Remove suffix to get actual column name
+    #                 filters.append(operation(getattr(cls, column_name), value))
+    #                 break
+    #         else:
+    #             # Handle 'IN' query if the value is a list
+    #             if isinstance(value, list):
+    #                 filters.append(getattr(cls, column).in_(value))
+    #             # Default to equality
+    #             else:
+    #                 filters.append(getattr(cls, column) == value)
+
+    #     try:
+    #         log.info(f'Select query with attrs={str(conditions)} extra={str(extra)}')
+    #         if filters:
+    #             where_clause = or_(*filters) if use_or else and_(*filters)
+    #             query = select(cls).with_only_columns(*columns).where(where_clause)
+    #         else:
+    #             query = select(cls).with_only_columns(*columns)
+
+    #         log.info(f'Executing SQL: {str(query.compile(compile_kwargs={"literal_binds": True}))}')
+
+    #         data = await session.execute(query)
+    #         result = data.mappings().all()
+    #         return result
+    #     except Exception as e:
+    #         log.error(f'Failed select query due to error={str(e)} extra={str(extra)}')
+    #         await session.rollback()
+    #         raise e
+
     @classmethod
-    async def select(cls, extra={}, columns=['*'], use_or=False, **conditions):
-        """
-        Retrieve records from the database based on specified conditions, including support for 'IN', '>', '<', '>=', and '<=' queries.
-
-        :param extra: Additional parameters for logging purposes.
-        :param columns: Specific columns to select from the model.
-        :param conditions: A dictionary of conditions to filter which records to retrieve.
-                        - Use '__gt', '__gte', '__lt', '__lte' for comparison operators.
-                        - If the value is a list, an 'IN' query will be performed.
-        :raises NoResultFound: Raises if no records match the conditions.
-        :raises Exception: Raises an exception if the select fails.
-        :return: List of records matching the conditions.
-
-        Args:
-            use_or:
-        """
+    async def select(cls, extra={}, columns=None, use_or=False, **conditions):
         session = DatabaseSession.get_session(cls)
 
-        # Mapping of suffixes to SQLAlchemy filter operations
-        operator_mapping = {
-            '__gt': lambda col, val: col > val,
-            '__gte': lambda col, val: col >= val,
-            '__lt': lambda col, val: col < val,
-            '__lte': lambda col, val: col <= val,
-        }
-
-        filters = []
-
-        for column, value in conditions.items():
-            # Handle comparison operators based on suffix
-            for suffix, operation in operator_mapping.items():
-                if column.endswith(suffix):
-                    column_name = column[:-len(suffix)]  # Remove suffix to get actual column name
-                    filters.append(operation(getattr(cls, column_name), value))
-                    break
-            else:
-                # Handle 'IN' query if the value is a list
-                if isinstance(value, list):
-                    filters.append(getattr(cls, column).in_(value))
-                # Default to equality
-                else:
-                    filters.append(getattr(cls, column) == value)
-
         try:
-            log.info(f'Select query with attrs={str(conditions)} extra={str(extra)}')
-            if filters:
-                where_clause = or_(*filters) if use_or else and_(*filters)
-                query = select(cls).with_only_columns(*columns).where(where_clause)
+            log.info(f"Select query with attrs={str(conditions)} extra={str(extra)}")
+
+            filters = []
+            for col_name, value in conditions.items():
+                col = getattr(cls, col_name)
+                if isinstance(value, list):
+                    filters.append(col.in_(value))
+                else:
+                    filters.append(col == value)
+
+            where_clause = or_(*filters) if (use_or and filters) else and_(*filters)
+
+            if columns:
+                # Select specific columns
+                query = select(*[getattr(cls, c) for c in columns]).where(where_clause)
             else:
-                query = select(cls).with_only_columns(*columns)
+                # Select ORM objects (correct behavior)
+                query = select(cls).where(where_clause)
 
-            log.info(f'Executing SQL: {str(query.compile(compile_kwargs={"literal_binds": True}))}')
+            log.info(
+                f"Executing SQL: {str(query.compile(compile_kwargs={'literal_binds': True}))}"
+            )
 
-            data = await session.execute(query)
-            result = data.mappings().all()
-            return result
+            result = await session.execute(query)
+
+            # If selecting full ORM models
+            if columns is None:
+                return result.scalars().all()
+
+            # If selecting specific columns
+            return result.mappings().all()
+
         except Exception as e:
-            log.error(f'Failed select query due to error={str(e)} extra={str(extra)}')
+            log.error(f"Failed select query due to error={str(e)} extra={str(extra)}")
             await session.rollback()
             raise e
+
 
     @classmethod
     async def delete(cls, extra={}, conditions={}):

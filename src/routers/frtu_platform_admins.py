@@ -1,40 +1,39 @@
+
+from uuid import UUID
 from fastapi import APIRouter, Header, Request, Depends
 
 from src import Settings
-from src.routers.frtu_users import user_login
-from src.views.frtu_platform_admins import  create, create_platform_admin, delete_admin, get_admin, update_admin
+from src.middleware.CreatePermissionMiddleware import require_create_permission
+# from src.routers.frtu_users import user_login
+from src.schemas.frtu_platform_admins import FRTUPlatformAdminCreate, FRTUPlatformAdminOut
+from src.views.frtu_platform_admins import  create_platform_admin
 
 router = APIRouter(
-    prefix="/api/admin",
+    prefix="/api/platform-admin",
     tags=['frtu_platform_admin']
 )
 
+@router.post("/", response_model=FRTUPlatformAdminOut)
+async def api_create_platform_admin(
+    data: FRTUPlatformAdminCreate,
+    user_id: UUID = Depends(require_create_permission)
+):
+    platform_admin = await create_platform_admin(data, creator_id=user_id)
+    return platform_admin
 
-@router.post("")
-async def post(request: Request, settings: Settings = Depends(Settings.get_settings)):
-    return await create(request, settings)
 
-@router.post("/platform/create")
-async def post(request: Request, authorization: str = Header(..., convert_underscores=False), settings: Settings = Depends(Settings.get_settings)):
-    return await create_platform_admin(request, authorization)
+# @router.post("/", response_model=FRTUPlatformAdminOut)
+# async def api_create_platform_admin(
+#     data: FRTUPlatformAdminCreate,
+#     user_id: UUID = Depends(
+#         require_create_permission(
+#             resource="PLATFORM_ADMIN",      # Permission check
+#             allowed_roles=["ADMIN"]         # Role restriction
+#         )
+#     )
+# ):
+#     return await create_platform_admin(data, creator_id=user_id)
 
-@router.get("")
-async def get(request: Request, settings: Settings = Depends(Settings.get_settings)):
-    return await get_admin(request)
 
-@router.post("/update")
-async def post(request: Request, settings: Settings = Depends(Settings.get_settings)):
-    return await update_admin(request)
 
-@router.delete("/delete")
-async def delete(request: Request, settings: Settings = Depends(Settings.get_settings)):
-    return await delete_admin(request)
-
-# @router.post("/platform-admin/login")
-# async def login(request: Request, settings: Settings = Depends(Settings.get_settings)):
-#     return await admin_login(request)
-
-@router.post("/login")
-async def login(request: Request, settings: Settings = Depends(Settings.get_settings)):
-    return await user_login(request)
 

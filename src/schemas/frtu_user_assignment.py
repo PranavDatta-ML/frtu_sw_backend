@@ -7,9 +7,12 @@ from pydantic import BaseModel, field_validator
 class FRTUUserAssignmentBase(BaseModel):
     role_id: UUID
     user_id: UUID
-    scope_id: Optional[UUID]
+    scope_id: Optional[UUID] = None
     scope_type: Optional[str]
     attribute: Optional[Any] = None
+    
+    creation_time: Optional[datetime] = None
+    last_update_time: Optional[datetime] = None
 
 class FRTUUserAssignmentCreate(FRTUUserAssignmentBase):
     @field_validator("creation_time")
@@ -23,7 +26,10 @@ class FRTUUserAssignmentCreate(FRTUUserAssignmentBase):
 class FRTUUserAssignmentRead(FRTUUserAssignmentBase):
     id: UUID
     user_id: UUID
+    scope_type: str
     role_id: UUID
+    scope_id: Optional[UUID] = None
+    attribute: Optional[dict] = {}
     creation_time: Optional[datetime] = None
     last_update_time: Optional[datetime] = None
 

@@ -24,11 +24,9 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         self.issuer = issuer
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        # Skip authentication for excluded paths
         if request.url.path in self.exclude_paths:
             return await call_next(request)
 
-        # Get token from Authorization header
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
             return Response(
@@ -39,7 +37,6 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         token = auth_header.split(" ")[1]
 
         try:
-            # Verify and decode the JWT token
             payload = jwt.decode(
                 token,
                 self.secret_key,
@@ -48,7 +45,6 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                 issuer=self.issuer,
             )
 
-            # Add user info to request state for use in endpoints
             request.state.user = payload
 
         except jwt.ExpiredSignatureError:
@@ -62,6 +58,5 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
 
-        # Continue to the next middleware/endpoint
         response = await call_next(request)
         return response

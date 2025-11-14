@@ -1,11 +1,12 @@
 from fastapi import Request
 
+from src.models.frtu_user_assignment import FRTUUserAssignment
 from src.schemas.auth import AuthBase
-from src.models.frtu_users import FRTUUser, FRTUUsers
+from src.models.frtu_users import FRTUUsers
 from src.utils.schema import verify_schema
 from src.utils.security import hash_password
 from src import Settings, HttpStatusCode
-from src.utils.jwt_tokens import create_access_token
+from src.utils.jwt_tokens import create_access_token, create_refresh_token
 
 
 async def validate(request: Request, settings: Settings):
@@ -26,6 +27,17 @@ async def validate(request: Request, settings: Settings):
         hashed_password = hash_password(data.password, user.salt)
         if hashed_password != user.password_hash:
             return HttpStatusCode.BAD_REQUEST.response(message="Invalid password")
+        
+        # user_assignment = await FRTUUserAssignment.select(user_id=user["id"])
+        # role_id = None
+        # if user_assignment:
+        #     role_id = str(user_assignment[0]["role_id"])
+
+        user_assignment = await FRTUUserAssignment.select(user_id=user.id)
+        role_id = None
+        if user_assignment:
+            role_id = str(user_assignment[0].role_id)
+
 
         token = create_access_token(
             sub=str(user.id),
@@ -34,7 +46,28 @@ async def validate(request: Request, settings: Settings):
                 "role": "admin"
             }
         )
-        return HttpStatusCode.OK.response(message="Login successfully done", data=token)
+
+        refresh_token = create_refresh_token(
+            sub=str(user.id),
+            extra_claims={
+                "name": user.name,
+                "email": user.email,
+                "role_id": role_id
+            }
+        )
+        resp = {
+            "http_code": 200,
+            "code": "OK",
+            "message": "Login successful",
+            "token": token,
+            "refresh_token": refresh_token,
+            "user_id": str(user.id),
+            "role_id": role_id,
+            "name": user.name,
+            "email": user.email
+        }
+        return resp
+        # return HttpStatusCode.OK.response(message="Login successfully done", data=token)
     except Exception as e:
         return HttpStatusCode.BAD_REQUEST.response(message=str(e))
 

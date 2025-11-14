@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Header, Request, Depends
 from src import Settings
-from src.routers.frtu_users import user_login
+# from src.routers.frtu_users import user_login
 from src.views.frtu_tenants import create_tenant, create_tenant_user, delete_tenant, get_tenant_by_name, get_tenants, tenant_login, update_tenant  # your project create view function
 
 router = APIRouter(
@@ -36,6 +36,6 @@ async def tenant_delete(request: Request):
 async def login_tenant(request: Request,authorization: str = Header(..., convert_underscores=False)):
     return await tenant_login(request)
 
-@router.post("/user/login")
-async def login_tenant_user(request: Request,authorization: str = Header(..., convert_underscores=False)):
-    return await user_login(request)
+# @router.post("/user/login")
+# async def login_tenant_user(request: Request,authorization: str = Header(..., convert_underscores=False)):
+#     return await user_login(request)

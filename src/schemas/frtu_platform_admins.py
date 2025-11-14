@@ -15,6 +15,7 @@ class FRTUPlatformAdminBase(BaseModel):
     last_update_time: Optional[datetime] = None
 
 class FRTUPlatformAdminCreate(FRTUPlatformAdminBase):
+    # removed created_by field
     @field_validator("last_update_time")
     def set_last_update_time(cls, value: datetime):
         return datetime.now(UTC)
@@ -22,6 +23,7 @@ class FRTUPlatformAdminCreate(FRTUPlatformAdminBase):
     @field_validator("creation_time")
     def set_creation_time(cls, value: datetime):
         return datetime.now(UTC)
+
     
   # salt: Optional[str] = None
     # password_hash: Optional[str] = None
@@ -51,9 +53,9 @@ class FRTUPlatformAdminCreate(FRTUPlatformAdminBase):
 
     #     return data
 
-    def to_orm(self):
-        orm_data = self.model_dump(exclude={"password"})
-        return {k: v for k, v in orm_data.items() if v is not None}
+    # def to_orm(self):
+    #     orm_data = self.model_dump(exclude={"password"})
+    #     return {k: v for k, v in orm_data.items() if v is not None}
     
 
 
@@ -68,6 +70,7 @@ class FRTUPlatformAdminUpdate(BaseModel):
 
 class FRTUPlatformAdminOut(FRTUPlatformAdminBase):
     id: UUID
+    created_by: UUID | None = None
     creation_time: Optional[datetime] = None
     last_update_time: Optional[datetime] = None
 

@@ -7,17 +7,25 @@ class FRTURolePermissionBase(BaseModel):
     role_id: UUID
     permission_id: UUID
 
-class FRTURolePermissionCreate(FRTURolePermissionBase):
-    @field_validator("creation_time")
-    def set_creation_time(cls, v):
-        return datetime.now(UTC)
+class AssignRolePermission(FRTURolePermissionBase):
+    role_id: UUID = Field(..., description="Role ID")
+    permission_id: UUID = Field(..., description="Permission ID")
 
-    @field_validator("last_update_time")
-    def set_last_update_time(cls, v):
-        return datetime.now(UTC)
+# class FRTURolePermissionCreate(FRTURolePermissionBase):
+#     @field_validator("creation_time")
+#     def set_creation_time(cls, v):
+#         return datetime.now(UTC)
+
+#     @field_validator("last_update_time")
+#     def set_last_update_time(cls, v):
+#         return datetime.now(UTC)
 
 class FRTURolePermissionRead(FRTURolePermissionBase):
-    id: UUID
+    assigned_by: UUID
+    role_id: UUID
+    permission_id: UUID    
+    role_created_by: Optional[UUID] = None
+    permission_created_by: Optional[UUID] = None
     creation_time: Optional[datetime] = None
     last_update_time: Optional[datetime] = None
 

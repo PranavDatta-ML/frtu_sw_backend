@@ -1,31 +1,21 @@
-from fastapi import APIRouter, Header, Request, Depends
+# src/routers/frtu_role_permissions.py
+from fastapi import APIRouter, Depends
+from uuid import UUID
 
-from src import Settings
-from src.views.frtu_role_permissions import assign_permissions_to_role, get_all_role_permissions, get_role_permissions, remove_permissions_from_role
+from src.middleware.CreatePermissionMiddleware import require_create_permission
+from src.schemas.frtu_role_permissions import AssignRolePermission, FRTURolePermissionRead
+from src.views.frtu_role_permissions import assign_permission_to_role
 
 
 router = APIRouter(
     prefix="/api/role-permissions",
-    tags=['Role-Permission Management']
+    tags=["frtu_role_permissions"]
 )
 
 
-@router.post("/assign")
-async def assign_role_permissions(request: Request, authorization: str = Header(..., convert_underscores=False), settings: Settings = Depends(Settings.get_settings)):
-    return await assign_permissions_to_role(request, authorization)
-
-
-@router.delete("/remove")
-async def remove_role_permissions(request: Request, authorization: str = Header(..., convert_underscores=False), settings: Settings = Depends(Settings.get_settings)):
-    return await remove_permissions_from_role(request, authorization)
-
-
-@router.get("/{role_name}")
-async def fetch_role_permissions(request: Request, role_name: str, authorization: str = Header(..., convert_underscores=False), settings: Settings = Depends(Settings.get_settings)):
-    return await get_role_permissions(request, role_name, authorization)
-
-@router.get("")
-async def fetch_all_role_permissions(request: Request, authorization: str = Header(..., convert_underscores=False), settings: Settings = Depends(Settings.get_settings)):
-    return await get_all_role_permissions(request, authorization)
-
-
+@router.post("/", response_model=FRTURolePermissionRead)
+async def api_assign_permission_to_role(
+    data: AssignRolePermission,
+    user_id: UUID = Depends(require_create_permission)
+):
+    return await assign_permission_to_role(data, assigned_by=user_id)

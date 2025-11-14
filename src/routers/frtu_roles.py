@@ -1,40 +1,50 @@
-from fastapi import APIRouter, Header, Request, Depends
+from fastapi import APIRouter, Depends, Path, Query
+from typing import List
+from uuid import UUID
 
-from src import Settings
-from src.views.frtu_roles import create_role, get_all_roles,get_role_by_name,update_role_by_name,delete_role_by_name,get_role_users
-
-router = APIRouter(
-    prefix="/api/roles",
-    tags=['Roles']
-)
-
-
-@router.post("")
-async def create_roles(request: Request, authorization: str = Header(..., convert_underscores=False), settings: Settings = Depends(Settings.get_settings)):
-    return await create_role(request, authorization, settings)
+from src.schemas.frtu_roles import FRTURoleCreate, FRTURoleUpdate, FRTURoleRead
+from src.middleware.CreatePermissionMiddleware import require_create_permission
+from src.middleware.ReadPermissionMiddleware import require_read_permission
+from src.views.frtu_roles import create_role, delete_role, get_role, list_roles, update_role
 
 
-@router.get("")
-async def get_list_roles(request: Request, settings: Settings = Depends(Settings.get_settings)):
-    return await get_all_roles(request)
+router = APIRouter(prefix="/roles", tags=["roles"])
 
-@router.get("/")
-async def get_role(request: Request,name:str, settings: Settings = Depends(Settings.get_settings)):
-    return await get_role_by_name(request, name=name)
+@router.post("/", response_model=FRTURoleRead)
+async def api_create_role(
+    role_create: FRTURoleCreate,
+    user_id: UUID = Depends(require_create_permission)
+):
+    return await create_role(role_create, user_id)
 
-@router.put("/")
-async def update_role(request: Request, name:str, authorization: str = Header(..., convert_underscores=False), settings: Settings = Depends(Settings.get_settings)):
-    return await update_role_by_name(request, name=name, authorization=authorization)
+@router.get("/", response_model=List[FRTURoleRead])
+async def api_list_roles(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1),
+    user_id: UUID = Depends(require_read_permission)
+):
+    return await list_roles(skip, limit)
 
-# @router.put("/update/{name}")
-# async def update_role(request: Request, name:str, authorization: str = Header(...), settings: Settings = Depends(Settings.get_settings)):
-#     return await update_role_by_name(request, name=name, authorization)
+@router.get("/{role_id}", response_model=FRTURoleRead)
+async def api_get_role(
+    role_id: UUID = Path(...),
+    user_id: UUID = Depends(require_read_permission)
+):
+    return await get_role(role_id)
 
-@router.delete("/")
-async def delete_role(request: Request, name:str, authorization: str = Header(...), settings: Settings = Depends(Settings.get_settings)):
-    return await delete_role_by_name(request, name=name, authorization=authorization)
+@router.put("/{role_id}", response_model=FRTURoleRead)
+async def api_update_role(role_id: UUID,
+    role_update: FRTURoleUpdate,
+    user_id: UUID = Depends(require_create_permission)
+):
+    return await update_role(role_id, role_update)
 
-@router.get("/users")
-async def get_user_using_role_name(request: Request, name:str, settings: Settings = Depends(Settings.get_settings)):
-    return await get_role_users(request, name=name)
+@router.delete("/{role_id}")
+async def api_delete_role(
+    role_id: UUID,
+    user_id: UUID = Depends(require_create_permission)
+):
+    await delete_role(role_id)
+    return {"message": "Role deleted successfully"}
+
 

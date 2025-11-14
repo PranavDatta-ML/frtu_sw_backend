@@ -11,6 +11,7 @@ class FRTURoleBase(BaseModel):
     last_update_time: Optional[datetime] = None
 
 class FRTURoleCreate(FRTURoleBase):
+    user_id: Optional[UUID] = None
     @field_validator("creation_time")
     def set_creation_time(cls, v):
         return datetime.now(UTC)

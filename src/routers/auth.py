@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Request, Depends
 
 from src import Settings
+from src.views.auth import validate
 
 router = APIRouter(
     prefix="/auth",
@@ -10,4 +11,4 @@ router = APIRouter(
 
 @router.post("/login")
 async def login_post(request: Request, settings: Settings = Depends(Settings.get_settings)):
-    pass
+    return await validate(request, settings)

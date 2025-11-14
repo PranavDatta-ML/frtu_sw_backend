@@ -1,45 +1,53 @@
-from fastapi import APIRouter, Header, Request, Depends
+from fastapi import APIRouter, Depends, Path, Query
+from typing import List
+from uuid import UUID
 
-from src import Settings
-from src.views.frtu_permissions import check_user_permission, create_permission, delete_permission, get_all_permissions, get_available_resources, get_user_permissions, update_permission
-
-router = APIRouter(
-    prefix="/api/permissions",
-    tags=['Permissions']
-)
-
-
-@router.post("")
-async def create_permissions(request: Request, authorization: str = Header(..., convert_underscores=False), settings: Settings = Depends(Settings.get_settings)):
-    return await create_permission(request, authorization)
+from src.schemas.frtu_permissions import FRTUPermissionCreate, FRTUPermissionUpdate, FRTUPermissionRead
+from src.middleware.CreatePermissionMiddleware import require_create_permission
+from src.middleware.ReadPermissionMiddleware import require_read_permission
+from src.views.frtu_permissions import create_permission, delete_permission, get_permission, list_permissions, update_permission
 
 
-@router.get("")
-async def get_permissions(request: Request, authorization: str = Header(..., convert_underscores=False), settings: Settings = Depends(Settings.get_settings)):
-    return await get_all_permissions(request, authorization)
+router = APIRouter(prefix="/permissions", tags=["permissions"])
 
-@router.get("/user")
-async def get_specific_user_permissions(request: Request, authorization: str = Header(..., convert_underscores=False), settings: Settings = Depends(Settings.get_settings)):
-    return await get_user_permissions(request, authorization)
-
-@router.put("")
-async def update_user_permissions(request: Request, authorization: str = Header(..., convert_underscores=False), settings: Settings = Depends(Settings.get_settings)):
-    return await update_permission(request, authorization)
+@router.post("/", response_model=FRTUPermissionRead)
+async def api_create_permission(
+    permission_create: FRTUPermissionCreate,
+    user_id: UUID = Depends(require_create_permission)
+):
+    return await create_permission(permission_create, user_id)
 
 
-@router.delete("")
-async def delete_user_permissions(request: Request, authorization: str = Header(..., convert_underscores=False), settings: Settings = Depends(Settings.get_settings)):
-    return await delete_permission(request, authorization)
+@router.get("/", response_model=List[FRTUPermissionRead])
+async def api_list_permissions(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1),
+    user_id: UUID = Depends(require_read_permission)
+):
+    return await list_permissions(skip, limit)
 
+@router.get("/{permission_id}", response_model=FRTUPermissionRead)
+async def api_get_permission(
+    permission_id: UUID = Path(...),
+    user_id: UUID = Depends(require_read_permission)
+):
+    return await get_permission(permission_id)
 
+@router.put("/{permission_id}", response_model=FRTUPermissionRead)
+async def api_update_permission(
+    permission_id: UUID,
+    permission_update: FRTUPermissionUpdate,
+    user_id: UUID = Depends(require_create_permission)
+):
+    return await update_permission(permission_id, permission_update)
 
-@router.get("/resources")
-async def get_list_resources(request: Request, settings: Settings = Depends(Settings.get_settings)):
-    return await get_available_resources(request)
+@router.delete("/{permission_id}")
+async def api_delete_permission(
+    permission_id: UUID,
+    user_id: UUID = Depends(require_create_permission)
+):
+    await delete_permission(permission_id)
+    return {"message": "Permission deleted successfully"}
 
-
-@router.get("/check")
-async def check_permissions(request: Request, authorization: str = Header(..., convert_underscores=False), settings: Settings = Depends(Settings.get_settings)):
-    return await check_user_permission(request, authorization)
 
 

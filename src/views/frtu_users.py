@@ -1,80 +1,179 @@
 import uuid
-from click import UUID
-from fastapi import Query, Request
+from fastapi import Body, HTTPException, Query, Request, status
 from datetime import datetime, timezone
-
+from uuid import UUID
 from fastapi.params import Header
 from src.core.settings import Settings
+from src.models.frtu_entities import FRTUEntities
 from src.models.frtu_permissions import FRTUPermissions
 from src.models.frtu_role_permissions import FRTURolePermissions
 from src.models.frtu_roles import FRTURoles
 from src.models.frtu_user_assignment import FRTUUserAssignment
 from src.models.frtu_users import FRTUUsers
 from src.schemas.auth import AuthBase
+from src.schemas.frtu_users import FRTUUserCreate
 from src.utils.jwt_tokens import create_access_token, decode_access_token
 from src.utils.schema import verify_schema
 from src.utils.security import generate_salt, hash_password
 from src import HttpStatusCode
 
-async def create_user(request: Request, setting: Settings):
-    try:
-        payload = await request.json()
-        email = payload.get("email")
-        mobile_no = payload.get("mobile_no")
-        name = payload.get("name")
-        password = payload.get("password")
-        attribute = payload.get("attribute") or {} 
+# async def create_user(data: FRTUUserCreate, creator_id: str):
+#     # Convert creator_id string to UUID object
+#     try:
+#         creator_uuid = UUID(creator_id)
+#     except Exception:
+#         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid creator_id format")
 
-        if not name or not password or (not email and not mobile_no):
-            return HttpStatusCode.BAD_REQUEST.response(
-                message="name, password, and either email or mobile_no are required"
-            )
+#     # Check for existing user by email
+#     existing_users = await FRTUUsers.select(email=data.email)
+#     if existing_users:
+#         raise HTTPException(
+#             status_code=status.HTTP_400_BAD_REQUEST,
+#             detail="User with this email already exists"
+#         )
 
-        filters = {}
-        if email:
-            filters["email"] = email
-        if mobile_no:
-            filters["mobile_no"] = mobile_no
+#     # Check for existing user by mobile number
+#     existing_users = await FRTUUsers.select(mobile_no=data.mobile_no)
+#     if existing_users:
+#         raise HTTPException(
+#             status_code=status.HTTP_400_BAD_REQUEST,
+#             detail="User with this mobile number already exists"
+#         )
 
-        existing_users = await FRTUUsers.select(**filters)
-        if existing_users:
-            return HttpStatusCode.BAD_REQUEST.response(
-                message="User with this email or mobile_no already exists"
-            )
+#     # Password hashing
+#     salt = generate_salt()
+#     password_hash = hash_password(data.password, salt)
 
-        salt = uuid.uuid4().hex
-        password_hash = hash_password(password, salt)
+#     # Create the user record
+#     user = FRTUUsers(
+#         email=data.email,
+#         mobile_no=data.mobile_no,
+#         name=data.name,
+#         password_hash=password_hash,
+#         salt=salt,
+#         is_active=True,
+#         is_deleted=False,
+#         creation_time=datetime.utcnow(),
+#         last_update_time=datetime.utcnow()
+#     )
+#     await user.insert()
 
-        now = datetime.utcnow()  
+#     # Create entity mapping
+#     entity = FRTUEntities(
+#         entity_id=user.id,
+#         entity_type="USER",
+#         created_by=creator_uuid,
+#         creation_time=datetime.utcnow(),
+#         last_update_time=datetime.utcnow()
+#     )
+#     await entity.insert()
 
-        user_obj = await FRTUUsers.insert(
-            name=name,
-            email=email or "",
-            mobile_no=mobile_no or "",
-            password_hash=password_hash,
-            salt=salt,
-            attribute=attribute,  
-            creation_time=now,
-            last_update_time=now,
-        )
+#     return user
 
-        user_dict = {
-            "id": str(user_obj.id),
-            "name": user_obj.name,
-            "email": user_obj.email,
-            "mobile_no": user_obj.mobile_no,
-            "attribute": user_obj.attribute or {},
-            "creation_time": user_obj.creation_time.isoformat() if user_obj.creation_time else None,
-            "last_update_time": user_obj.last_update_time.isoformat() if user_obj.last_update_time else None
-        }
+async def create_user(data: FRTUUserCreate, creator_id: UUID = None):
+    # data = payload
 
-        return HttpStatusCode.CREATED.response(
-            message="User created successfully",
-            data=user_dict,
-        )
+    existing = await FRTUUsers.select(email=data.email)
+    if existing:
+        raise HTTPException(400, "User with this email already exists")
 
-    except Exception as e:
-        return HttpStatusCode.BAD_REQUEST.response(message=str(e))
+    existing = await FRTUUsers.select(mobile_no=data.mobile_no)
+    if existing:
+        raise HTTPException(400, "User with this mobile number already exists")
+
+    salt = generate_salt()
+    password_hash = hash_password(data.password, salt)
+
+    user = await FRTUUsers.insert(
+        name=data.name,
+        email=data.email,
+        mobile_no=data.mobile_no,
+        password_hash=password_hash,
+        salt=salt,
+        is_active=True,
+        is_deleted=False,
+        attribute=data.attribute,
+        creation_time=datetime.utcnow(),
+        last_update_time=datetime.utcnow()
+    )
+
+    resp = {
+        "created_by": creator_id,
+        **user.__dict__
+    }
+
+    # await FRTUEntities.insert(
+    #     entity_id=user.id,
+    #     name=user.name,
+    #     email_id=user.email,
+    #     mobile_no=user.mobile_no,
+    #     created_by=creator_id,
+    #     creation_time=datetime.utcnow(),
+    #     last_update_time=datetime.utcnow()
+    # )
+
+    return resp
+
+
+# async def create_user(request: Request, setting: Settings):
+#     try:
+#         payload = await request.json()
+#         email = payload.get("email")
+#         mobile_no = payload.get("mobile_no")
+#         name = payload.get("name")
+#         password = payload.get("password")
+#         attribute = payload.get("attribute") or {} 
+
+#         if not name or not password or (not email and not mobile_no):
+#             return HttpStatusCode.BAD_REQUEST.response(
+#                 message="name, password, and either email or mobile_no are required"
+#             )
+
+#         filters = {}
+#         if email:
+#             filters["email"] = email
+#         if mobile_no:
+#             filters["mobile_no"] = mobile_no
+
+#         existing_users = await FRTUUsers.select(**filters)
+#         if existing_users:
+#             return HttpStatusCode.BAD_REQUEST.response(
+#                 message="User with this email or mobile_no already exists"
+#             )
+
+#         salt = uuid.uuid4().hex
+#         password_hash = hash_password(password, salt)
+
+#         now = datetime.utcnow()  
+
+#         user_obj = await FRTUUsers.insert(
+#             name=name,
+#             email=email or "",
+#             mobile_no=mobile_no or "",
+#             password_hash=password_hash,
+#             salt=salt,
+#             attribute=attribute,  
+#             creation_time=now,
+#             last_update_time=now,
+#         )
+
+#         user_dict = {
+#             "id": str(user_obj.id),
+#             "name": user_obj.name,
+#             "email": user_obj.email,
+#             "mobile_no": user_obj.mobile_no,
+#             "attribute": user_obj.attribute or {},
+#             "creation_time": user_obj.creation_time.isoformat() if user_obj.creation_time else None,
+#             "last_update_time": user_obj.last_update_time.isoformat() if user_obj.last_update_time else None
+#         }
+
+#         return HttpStatusCode.CREATED.response(
+#             message="User created successfully",
+#             data=user_dict,
+#         )
+
+#     except Exception as e:
+#         return HttpStatusCode.BAD_REQUEST.response(message=str(e))
 
 async def get_users(request: Request):
     try:
@@ -380,82 +479,6 @@ async def get_user_with_roles_permissions(request: Request, name: str):
         return HttpStatusCode.BAD_REQUEST.response(
             message=f"Failed to retrieve user details: {str(e)}"
         )
-
-
-# @router.post("/user/login")
-# async def login_user(request: Request):
-#     try:
-#         payload = await request.json()
-#         identifier = payload.get("email") or payload.get("mobile_no")
-#         password = payload.get("password")
-
-#         if not identifier or not password:
-#             return HttpStatusCode.BAD_REQUEST.response(
-#                 message="email or mobile_no and password are required"
-#             )
-
-#         filters = {}
-#         if "@" in identifier:
-#             filters["email"] = identifier
-#         else:
-#             filters["mobile_no"] = identifier
-
-#         users = await FRTUUsers.select(**filters)
-#         if not users:
-#             return HttpStatusCode.BAD_REQUEST.response(message="Invalid credentials")
-
-#         user = users[0]
-
-#         password_hash = hash_password(password, user["salt"])
-#         if password_hash != user["password_hash"]:
-#             return HttpStatusCode.BAD_REQUEST.response(message="Invalid credentials")
-
-#         token = create_access_token(sub=str(user["id"]))
-
-#         return HttpStatusCode.OK.response(
-#             message="Login successful",
-#             data={"access_token": token},
-#         )
-
-#     except Exception as e:
-#         return HttpStatusCode.BAD_REQUEST.response(message=str(e))
-
-
-# async def login_user(request: Request):
-#     try:
-#         ok, messages, data = await verify_schema(await request.json(), AuthBase)
-#         if not ok:
-#             return HttpStatusCode.BAD_REQUEST.response(message=messages)
-
-#         username = data.username
-#         password = data.password
-
-#         filters = {"email": username} if "@" in username else {"mobile_no": username}
-
-#         users = await FRTUUsers.select(**filters)
-#         if not users:
-#             return HttpStatusCode.BAD_REQUEST.response(message="Invalid credentials")
-
-#         user = users[0]
-
-#         if hash_password(password, user["salt"]) != user["password_hash"]:
-#             return HttpStatusCode.BAD_REQUEST.response(message="Invalid credentials")
-
-#         token = create_access_token(
-#             sub=str(user["id"]),
-#             extra_claims={
-#                 "name": user.get("name"),
-#                 "role": user.get("role"),
-#             },
-#         )
-
-#         return HttpStatusCode.OK.response(
-#             message="Login successful",
-#             data={"access_token": token},
-#         )
-
-#     except Exception as e:
-#         return HttpStatusCode.BAD_REQUEST.response(message=str(e))
 
 
 async def login_user(request: Request):
