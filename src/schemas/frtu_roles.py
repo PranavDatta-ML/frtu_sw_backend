@@ -27,7 +27,7 @@ class FRTURoleUpdate(BaseModel):
 
 class FRTURoleRead(FRTURoleBase):
     id: UUID
-    user_id: UUID
+    user_id: Optional[UUID] = None
 
     class Config:
         from_attributes = True

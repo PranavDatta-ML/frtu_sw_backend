@@ -11,6 +11,7 @@ class FRTUUserAssignment(Base, ModelAdmin):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False)
     user_id = Column(UUID(as_uuid=True), ForeignKey("public.frtu_users.id"), nullable=False)
     role_id = Column(UUID(as_uuid=True), ForeignKey("public.frtu_roles.id"), nullable=False)
+    admin_id = Column(UUID(as_uuid=True), ForeignKey("public.frtu_platform_admins.id"), nullable=False)
     scope_id = Column(UUID(as_uuid=True), nullable=True)
     scope_type = Column(String, nullable=True)
     attribute = Column(JSON, nullable=True)

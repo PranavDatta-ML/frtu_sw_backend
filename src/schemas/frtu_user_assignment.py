@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 from uuid import UUID
 from pydantic import BaseModel, field_validator
 
@@ -7,6 +7,7 @@ from pydantic import BaseModel, field_validator
 class FRTUUserAssignmentBase(BaseModel):
     role_id: UUID
     user_id: UUID
+    admin_id: UUID
     scope_id: Optional[UUID] = None
     scope_type: Optional[str]
     attribute: Optional[Any] = None
@@ -23,15 +24,15 @@ class FRTUUserAssignmentCreate(FRTUUserAssignmentBase):
     def set_last_update_time(cls, v):
         return datetime.now(UTC)
 
+class FRTUUserAssignmentUpdate(BaseModel):
+    role_id: Optional[UUID] = None
+    admin_id: Optional[UUID] = None
+    scope_type: Optional[str] = None
+    scope_id: Optional[UUID] = None
+    attribute: Optional[Dict] = None
+
 class FRTUUserAssignmentRead(FRTUUserAssignmentBase):
     id: UUID
-    user_id: UUID
-    scope_type: str
-    role_id: UUID
-    scope_id: Optional[UUID] = None
-    attribute: Optional[dict] = {}
-    creation_time: Optional[datetime] = None
-    last_update_time: Optional[datetime] = None
 
     class Config:
         from_attributes = True

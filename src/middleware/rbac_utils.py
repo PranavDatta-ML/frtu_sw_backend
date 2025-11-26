@@ -1,6 +1,3 @@
-
-
-
 import uuid
 from src.core.status_codes import HttpStatusCode
 from src.models.frtu_permissions import FRTUPermissions

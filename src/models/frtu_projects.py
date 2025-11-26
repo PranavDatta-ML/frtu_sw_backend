@@ -14,8 +14,3 @@ class FRTUProjects(Base, ModelAdmin):
     attribute = Column(JSON, nullable=True)
     creation_time = Column(TIMESTAMP, nullable=True)
     last_update_time = Column(TIMESTAMP, nullable=True)
-
-    # creation_time = Column(DateTime(timezone=True), nullable=True)
-    # last_update_time = Column(DateTime(timezone=True), nullable=True)
-
-    

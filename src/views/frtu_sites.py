@@ -9,6 +9,7 @@ from src.models.frtu_sites import FRTUSites
 from src.models.frtu_projects import FRTUProjects
 from src import Settings, HttpStatusCode
 from src.utils.access_token import decode_token
+from src.utils.jwt_tokens import decode_access_token
 from src.utils.schema import verify_schema
 import jwt # type: ignore
 
@@ -21,7 +22,7 @@ async def create_site(request: Request, authorization: str = Header(..., convert
 
     tenant_token = authorization.split(" ")[1]
     try:
-        tenant_data = decode_token(tenant_token)
+        tenant_data = decode_access_token(tenant_token)
     except Exception as e:
         return {"http_code": 401,"code": "UNAUTHORIZED","message": f"Tenant token decode failed: {str(e)}"}
 

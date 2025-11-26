@@ -1,41 +1,109 @@
-from fastapi import APIRouter, Header, Request, Depends
-from src import Settings
-# from src.routers.frtu_users import user_login
-from src.views.frtu_tenants import create_tenant, create_tenant_user, delete_tenant, get_tenant_by_name, get_tenants, tenant_login, update_tenant  # your project create view function
+from fastapi import APIRouter, Depends, HTTPException, Header, Query, status
+from uuid import UUID
+
+from src.core.status_codes import HttpStatusCode
+from src.schemas.frtu_tenants import FRTUTenantCreate, FRTUTenantOut, FRTUTenantUpdate, FRTUTenantRead
+from src.utils.jwt_tokens import decode_access_token
+from src.views.frtu_tenants import create_tenant, get_tenant_by_id, get_tenants, update_tenant, delete_tenant
+from src.middleware.CreatePermissionMiddleware import require_permission
 
 router = APIRouter(
-    prefix="/tenant",
-    tags=['frtu_tenants']
+    prefix="/api/tenants",
+    tags=["frtu_tenants"]
 )
 
-@router.post("/create")
-async def tenant_create(request: Request,authorization: str = Header(..., convert_underscores=False), settings: Settings = Depends(Settings.get_settings)):
-    return await create_tenant(request, authorization)
+# CREATE
+@router.post("/")
+async def api_create_tenant(
+    data: FRTUTenantCreate,
+    authorization: str = Header(...),
+    user_id: UUID = Depends(require_permission("edit", "TENANT"))
+):
+    token = authorization.split(" ")[1]
+    decoded = decode_access_token(token)
+    creator_id = UUID(decoded["sub"])
+    return await create_tenant(data, creator_id)
 
-@router.post("/user/create")
-async def user_tenant_create(request: Request,authorization: str = Header(..., convert_underscores=False), settings: Settings = Depends(Settings.get_settings)):
-    return await create_tenant_user(request, authorization)
 
-@router.get("/get-tenants")
-async def tenant_read(request: Request):
-    return await get_tenants(request)
+# get tenant by id
+@router.get("/{tenant_id}")
+async def api_get_tenant_by_id(
+    tenant_id: UUID,
+    authorization: str = Header(...),
+    user_id: UUID = Depends(require_permission("view", "TENANT"))
+):
+    token = authorization.split(" ")[1]
+    decoded = decode_access_token(token)
+    requester_id = UUID(decoded["sub"])
+    return await get_tenant_by_id(tenant_id, requester_id)
 
-@router.get("/get-tenant")
-async def tenant_read(request: Request):
-    return await get_tenant_by_name(request)
 
-@router.post("/update-tenant")
-async def tenant_update(request: Request):
-    return await update_tenant(request)
 
-@router.delete("/delete-tenant")
-async def tenant_delete(request: Request):
-    return await delete_tenant(request)
+# GET ALL Tenants/ Get specific Tenant and search
+@router.get("/")
+async def api_get_tenants(
+    name: str | None = Query(None),
+    page: int = Query(1),
+    limit: int = Query(10),
+    authorization: str = Header(...),
+    user_id: UUID = Depends(require_permission("view", "TENANT"))
+):
+    token = authorization.split(" ")[1]
+    decoded = decode_access_token(token)
+    requester_id = UUID(decoded["sub"])
+    return await get_tenants(user_id=requester_id, name=name, page=page, limit=limit)
 
-@router.post("/login")
-async def login_tenant(request: Request,authorization: str = Header(..., convert_underscores=False)):
-    return await tenant_login(request)
 
-# @router.post("/user/login")
-# async def login_tenant_user(request: Request,authorization: str = Header(..., convert_underscores=False)):
-#     return await user_login(request)
+# UPDATE
+@router.put("/{tenant_id}")
+async def api_update_tenant(
+    tenant_id: UUID,
+    data: FRTUTenantUpdate,
+    authorization: str = Header(...),
+    user_id: UUID = Depends(require_permission("edit", "TENANT"))
+):
+    token = authorization.split(" ")[1]
+    decoded = decode_access_token(token)
+    requester_id = UUID(decoded["sub"])
+    return await update_tenant(tenant_id, data.model_dump(), requester_id)
+
+
+
+# DELETE
+# @router.delete("/{tenant_id}")
+# async def api_delete_tenant(
+#     tenant_id: UUID,
+#     authorization: str = Header(...),
+#     user_id: UUID = Depends(require_permission("edit", "TENANT"))
+# ):
+#     token = authorization.split(" ")[1]
+#     decoded = decode_access_token(token)
+#     requester_id = UUID(decoded["sub"])
+#     return await delete_tenant(tenant_id, requester_id)
+
+
+@router.delete("/{tenant_id}")
+async def api_delete_tenant(
+    tenant_id: UUID,
+    is_deleted: bool = Query(False),   # <-- confirmation flag
+    authorization: str = Header(...),
+    user_id: UUID = Depends(require_permission("edit", "TENANT"))
+):
+    if not is_deleted:
+        return HttpStatusCode.OK.response(
+            message="Delete confirmation required",
+            data={
+                "tenant_id": str(tenant_id),
+                "is_deleted": False,
+                "info": "Pass ?is_deleted=true to delete this tenant"
+            }
+        )
+
+    token = authorization.split(" ")[1]
+    decoded = decode_access_token(token)
+    requester_id = UUID(decoded["sub"])
+
+    return await delete_tenant(tenant_id, requester_id)
+
+
+

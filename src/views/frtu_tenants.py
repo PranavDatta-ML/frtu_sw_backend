@@ -1,650 +1,288 @@
-import secrets
-import uuid
-from click import UUID
-from fastapi import HTTPException, Header, Request, Depends, status
-from fastapi.responses import JSONResponse
-from src import Settings, HttpStatusCode
-from src.middleware.rbac_utils import verify_user_permission
+from copy import deepcopy
+from datetime import UTC, datetime
+from math import ceil
+from fastapi import HTTPException
+from src.core.status_codes import HttpStatusCode
 from src.models.frtu_entities import FRTUEntities
 from src.models.frtu_platform_admins import FRTUPlatformAdmin
 from src.models.frtu_projects import FRTUProjects
 from src.models.frtu_roles import FRTURoles
 from src.models.frtu_tenants import FRTUTenants
+from src.models.frtu_user_assignment import FRTUUserAssignment
 from src.models.frtu_users import FRTUUsers
-from src.schemas.frtu_tenants import FRTUTenantCreate, FRTUTenantRead
-from datetime import datetime, UTC, timedelta
-from src.utils.jwt_tokens import create_access_token, decode_access_token
-from src.utils.schema import verify_schema
-import jwt
-from src.config.auth_config import SECRET_KEY, ALGORITHM
-from src.utils.security import hash_password
+from src.schemas.frtu_tenants import FRTUTenantCreate, FRTUTenantOut, FRTUTenantUpdate
+from uuid import UUID
+
+async def get_projects_for_tenant(tenant_id: UUID):
+    project_list = await FRTUProjects.select(tenant_id=tenant_id)
+    return [
+        {
+            "project_id": str(p.id),
+            "project_name": p.name,
+            "attribute": p.attribute or {}
+        }
+        for p in project_list
+    ]
+
+async def create_tenant(data: FRTUTenantCreate, user_id: UUID):
+
+    assignments = await FRTUUserAssignment.select(user_id=user_id)
+    if not assignments:
+        return HttpStatusCode.BAD_REQUEST.response("User is not assigned to any Platform Admin")
+
+    admin_id = assignments[0].admin_id
+    if not admin_id:
+        return HttpStatusCode.BAD_REQUEST.response("No Platform Admin associated with this user")
+
+    existing = await FRTUTenants.select(admin_id=admin_id, name=data.name)
+    if existing:
+        return HttpStatusCode.BAD_REQUEST.response(
+            f"Tenant '{data.name}' already exists under this admin"
+        )
+
+    now = datetime.utcnow()
+
+    attribute_data = data.attribute or {}
+    attribute_data["email"] = data.email if data.email else None
+    attribute_data["mobile_no"] = data.mobile_no if data.mobile_no else None
+
+    tenant = await FRTUTenants.insert(
+        admin_id=admin_id,
+        name=data.name,
+        attribute=attribute_data,
+        creation_time=now,
+        last_update_time=now
+    )
+
+    await FRTUEntities.insert(
+        entity_id=tenant.id,
+        name=data.name,
+        email_id=data.email if data.email else None,
+        mobile_no=data.mobile_no if data.mobile_no else None,
+        attribute=attribute_data,
+        created_by=user_id,
+        creation_time=now,
+        last_update_time=now
+    )
+
+    out = FRTUTenantOut(
+        id=tenant.id,
+        admin_id=admin_id,
+        created_by=user_id,
+        name=data.name,
+        attribute=attribute_data
+    )
+
+    return HttpStatusCode.CREATED.response(
+        message="Tenant created successfully",
+        data=out.model_dump(mode="json")
+    )
 
 
+# get tenant by id
+async def get_tenant_by_id(tenant_id: UUID, user_id: UUID):
 
-# create tenant under specific admin
-# async def create_tenant(request: Request, settings: Settings):
-#     try:
-#         admin_name = request.query_params.get("admin_name")
-#         if not admin_name:
-#             return HttpStatusCode.BAD_REQUEST.response(
-#                 message="Missing admin_name in query params"
-#             )
+    tenant_list = await FRTUTenants.select(id=tenant_id)
+    if not tenant_list:
+        return HttpStatusCode.NOT_FOUND.response("Tenant not found")
 
-#         payload = await request.json()
-#         name = payload.get("name")
-#         if not name:
-#             return HttpStatusCode.BAD_REQUEST.response(
-#                 message="Tenant 'name' is required in payload"
-#             )
+    tenant = tenant_list[0]
 
-#         admin = await FRTUPlatformAdmin.select(name=admin_name)
-#         if not admin:
-#             return HttpStatusCode.NOT_FOUND.response(
-#                 message=f"Admin '{admin_name}' not found"
-#             )
+    assignments = await FRTUUserAssignment.select(user_id=user_id)
+    admin_ids = [a.admin_id for a in assignments if a.admin_id]
 
-#         admin_id = admin[0]["id"]
+    if not admin_ids:
+        return HttpStatusCode.BAD_REQUEST.response("User is not assigned to any Platform Admin")
 
-#         existing = await FRTUTenants.select(admin_id=admin_id, name=name)
-#         if existing:
-#             return HttpStatusCode.BAD_REQUEST.response(
-#                 message=f"Tenant '{name}' already exists for admin '{admin_name}'"
-#             )
+    if tenant.admin_id not in admin_ids:
+        return HttpStatusCode.BAD_REQUEST.response("You cannot view this tenant")
 
-#         attributes = {k: v for k, v in payload.items() if k != "name"}
+    admin_list = await FRTUPlatformAdmin.select(id=tenant.admin_id)
+    admin = admin_list[0] if admin_list else None
 
-#         now = datetime.now(UTC).replace(tzinfo=None)
+    entity_list = await FRTUEntities.select(entity_id=tenant_id)
+    entity = entity_list[0] if entity_list else None
+    projects = await get_projects_for_tenant(tenant_id)
+    data = {
+        "tenant_id": str(tenant.id),
+        "tenant_name": tenant.name,
+        "attribute": tenant.attribute,
+        "admin_id": str(tenant.admin_id),
+        "admin_name": admin.name if admin else None,
+        # "admin_created_by": str(admin.created_by) if admin and admin.created_by else None,
+        "email": entity.email_id if entity else None,
+        "mobile_no": entity.mobile_no if entity else None,
+        "children": {"projects": projects}
+    }
 
-#         value = await FRTUTenants.insert(
-#             admin_id=admin_id,
-#             name=name,
-#             attribute=attributes,
-#             creation_time=now,
-#             last_update_time=now
-#         )
-
-#         response_data = {
-#             "id": str(value.id),
-#             "admin_id": str(value.admin_id),
-#             "name": value.name,
-#             "attribute": value.attribute,
-#             "creation_time": value.creation_time.isoformat() if value.creation_time else None,
-#             "last_update_time": value.last_update_time.isoformat() if value.last_update_time else None,
-#         }
-
-#         return HttpStatusCode.CREATED.response(
-#             message="Tenant created successfully",
-#             data=response_data
-#         )
-
-#     except Exception as e:
-#         return HttpStatusCode.BAD_REQUEST.response(message=str(e))
+    return HttpStatusCode.OK.response(
+        message="Tenant fetched successfully",
+        data=data
+    )
 
 
-# get list of all tenant under specific admin
-async def get_tenants(request: Request):
-    try:
-        admin_name = request.query_params.get("admin_name")
-        if not admin_name:
-            return HttpStatusCode.BAD_REQUEST.response(
-                message="Missing admin_name in query params"
-            )
-
-        admin = await FRTUPlatformAdmin.select(name=admin_name)
-        if not admin:
-            return HttpStatusCode.NOT_FOUND.response(
-                message=f"Admin '{admin_name}' not found"
-            )
-
-        admin_id = admin[0]["id"]
-
-        tenants = await FRTUTenants.select(admin_id=admin_id)
-        if not tenants:
-            return HttpStatusCode.NOT_FOUND.response(
-                message=f"No tenants found for admin '{admin_name}'"
-            )
-
-        response_data = []
-        for tenant in tenants:
-            tenant_dict = dict(tenant)
-            if tenant_dict.get("creation_time"):
-                tenant_dict["creation_time"] = tenant_dict["creation_time"].isoformat()
-            if tenant_dict.get("last_update_time"):
-                tenant_dict["last_update_time"] = tenant_dict["last_update_time"].isoformat()
-
-            if tenant_dict.get("id"):
-                tenant_dict["id"] = str(tenant_dict["id"])
-            if tenant_dict.get("admin_id"):
-                tenant_dict["admin_id"] = str(tenant_dict["admin_id"])
-
-            response_data.append(tenant_dict)
-
+async def get_tenants(user_id: UUID, name: str | None = None, search: str | None = None, page: int = 1, limit: int = 10):
+    assignments = await FRTUUserAssignment.select(user_id=user_id)
+    admin_ids = [a.admin_id for a in assignments if a.admin_id]
+    if not admin_ids:
         return HttpStatusCode.OK.response(
-            message=f"{len(response_data)} tenant(s) fetched for admin '{admin_name}'",
-            data=response_data
+            message="No platform admin assigned",
+            data={"page": page, "limit": limit, "total_records": 0, "total_pages": 0, "tenants": []}
         )
 
-    except Exception as e:
-        return HttpStatusCode.BAD_REQUEST.response(message=str(e))
+    tenants = []
+    for admin_id in admin_ids:
+        tenants_for_admin = await FRTUTenants.select(admin_id=admin_id)
+        tenants.extend(tenants_for_admin)
 
-# get specific tenant( by tenant name ) under specific admin
-async def get_tenant_by_name(request: Request):
-    try:
-        admin_name = request.query_params.get("admin_name")
-        tenant_name = request.query_params.get("tenant_name")
+    if name:
+        name_lower = name.lower()
 
-        if not admin_name or not tenant_name:
-            return HttpStatusCode.BAD_REQUEST.response(
-                message="Missing required query params: admin_name and tenant_name"
-            )
+        exact_matches = [t for t in tenants if t.name.lower() == name_lower]
 
-        admin = await FRTUPlatformAdmin.select(name=admin_name)
-        if not admin:
-            return HttpStatusCode.NOT_FOUND.response(
-                message=f"Admin '{admin_name}' not found"
-            )
-
-        admin_id = admin[0]["id"]
-
-        tenants = await FRTUTenants.select(admin_id=admin_id, name=tenant_name)
-        if not tenants:
-            return HttpStatusCode.NOT_FOUND.response(
-                message=f"Tenant '{tenant_name}' not found for admin '{admin_name}'"
-            )
-
-        tenant = dict(tenants[0])
-
-        if tenant.get("id"):
-            tenant["id"] = str(tenant["id"])
-        if tenant.get("admin_id"):
-            tenant["admin_id"] = str(tenant["admin_id"])
-        if tenant.get("creation_time"):
-            tenant["creation_time"] = tenant["creation_time"].isoformat()
-        if tenant.get("last_update_time"):
-            tenant["last_update_time"] = tenant["last_update_time"].isoformat()
-
-        return HttpStatusCode.OK.response(
-            message=f"Tenant '{tenant_name}' fetched for admin '{admin_name}'",
-            data=tenant
-        )
-
-    except Exception as e:
-        return HttpStatusCode.BAD_REQUEST.response(message=str(e))
-
-# update tenant detail for specific admin
-async def update_tenant(request: Request):
-    try:
-        tenant_name = request.query_params.get("tenant_name")
-        admin_name = request.query_params.get("admin_name")
-
-        if not tenant_name or not admin_name:
-            return HttpStatusCode.BAD_REQUEST.response(
-                message="Missing 'tenant_name' or 'admin_name' in query params"
-            )
-
-        admin = await FRTUPlatformAdmin.select(name=admin_name)
-        if not admin:
-            return HttpStatusCode.NOT_FOUND.response(
-                message=f"Admin '{admin_name}' not found"
-            )
-        admin_id = admin[0]["id"]
-
-        tenants = await FRTUTenants.select(admin_id=admin_id, name=tenant_name)
-        if not tenants:
-            return HttpStatusCode.NOT_FOUND.response(
-                message=f"Tenant '{tenant_name}' not found for admin '{admin_name}'"
-            )
-        tenant_id = tenants[0]["id"]
-
-        payload = await request.json()
-        updated_attributes = payload or tenants[0]["attribute"] or {}
-        # now = datetime.now(UTC)
-        now = datetime.utcnow()
-
-        await FRTUTenants.update(
-            conditions={"id": tenant_id},
-            attribute=updated_attributes,
-            last_update_time=now
-        )
-
-        updated_tenant = await FRTUTenants.select(admin_id=admin_id, name=tenant_name)
-        tenant_dict = dict(updated_tenant[0])
-        tenant_dict["id"] = str(tenant_dict["id"])
-        tenant_dict["admin_id"] = str(tenant_dict["admin_id"])
-        tenant_dict["creation_time"] = tenant_dict["creation_time"].isoformat()
-        tenant_dict["last_update_time"] = tenant_dict["last_update_time"].isoformat()
-
-        return HttpStatusCode.OK.response(
-            message=f"Tenant '{tenant_name}' updated successfully",
-            data=tenant_dict
-        )
-
-    except Exception as e:
-        return HttpStatusCode.BAD_REQUEST.response(message=str(e))
-
-# delete tenant of specific admin
-async def delete_tenant(request: Request):
-    try:
-        tenant_name = request.query_params.get("tenant_name")
-        admin_name = request.query_params.get("admin_name")
-
-        if not tenant_name or not admin_name:
-            return HttpStatusCode.BAD_REQUEST.response(
-                message="Missing 'tenant_name' or 'admin_name' in query params"
-            )
-
-        admin = await FRTUPlatformAdmin.select(name=admin_name)
-        if not admin:
-            return HttpStatusCode.NOT_FOUND.response(
-                message=f"Admin '{admin_name}' not found"
-            )
-        admin_id = admin[0]["id"]
-
-        tenants = await FRTUTenants.select(admin_id=admin_id, name=tenant_name)
-        if not tenants:
-            return HttpStatusCode.NOT_FOUND.response(
-                message=f"Tenant '{tenant_name}' not found for admin '{admin_name}'"
-            )
-        tenant_id = tenants[0]["id"]
-
-        projects = await FRTUProjects.select(tenant_id=tenant_id)
-        if projects:
-            return HttpStatusCode.BAD_REQUEST.response(
-                message=f"Tenant '{tenant_name}' cannot be deleted because it has projects"
-            )
-
-        await FRTUTenants.delete(conditions={"id": tenant_id})
-
-        return HttpStatusCode.OK.response(
-            message=f"Tenant '{tenant_name}' deleted successfully"
-        )
-
-    except Exception as e:
-        return HttpStatusCode.BAD_REQUEST.response(message=str(e))
-
-
-# tenant_auth.py
-def create_token(data: dict):
-    return jwt.encode(data, SECRET_KEY, algorithm=ALGORITHM)
-
-def decode_token(token: str):
-    try:
-        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.PyJWTError as e:
-        raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
-
-
-# async def create_tenant(request: Request,authorization: str = Header(...)):
-#     try:
-#         if not authorization.startswith("Bearer "):
-#             return HttpStatusCode.UNAUTHORIZED.response("Invalid Authorization header")
-
-#         token = authorization.split(" ")[1]
-#         token_data = decode_access_token(token)
-#         platform_admin_user_id = token_data.get("sub")
-#         if not platform_admin_user_id:
-#             return HttpStatusCode.UNAUTHORIZED.response("Invalid token: user_id missing")
-
-#         platform_admin_user_id = uuid.UUID(platform_admin_user_id)
-
-#         admin_profile = await FRTUPlatformAdmin.select(id=platform_admin_user_id)
-#         # super_admin_profile = await FRTUUsers.select(id=platform_admin_user_id)
-#         if not admin_profile:
-#             return HttpStatusCode.BAD_REQUEST.response("Only Platform Admin can create tenants")
-
-#         admin_id = admin_profile[0]["id"]  
-
-#         payload = await request.json()
-#         name = payload.get("name")
-#         attribute = payload.get("attribute") or {}
-
-#         if not name:
-#             return HttpStatusCode.BAD_REQUEST.response("Tenant 'name' is required")
-
-#         existing = await FRTUTenants.select(admin_id=admin_id, name=name)
-#         if existing:
-#             return HttpStatusCode.BAD_REQUEST.response(f"Tenant '{name}' already exists")
-
-#         now = datetime.utcnow()
-
-#         tenant = await FRTUTenants.insert(
-#             admin_id=admin_id,
-#             name=name,
-#             attribute=attribute,
-#             creation_time=now,
-#             last_update_time=now
-#         )
-
-#         return HttpStatusCode.CREATED.response(
-#             message="Tenant created successfully",
-#             data={
-#                 "tenant_id": str(tenant.id),
-#                 "name": name,
-#                 "admin_id": str(admin_id),
-#                 "attribute": attribute
-#             }
-#         )
-
-#     except Exception as e:
-#         return HttpStatusCode.BAD_REQUEST.response(str(e))
-
-
-
-
-async def create_tenant_user(request: Request,authorization: str = Header(...)):
-    try:
-        if not authorization.startswith("Bearer "):
-            return HttpStatusCode.UNAUTHORIZED.response("Invalid Authorization header")
-
-        token = authorization.split(" ")[1]
-        token_data = decode_access_token(token)
-
-        # Allow only platform admin
-        # if token_data.get("role") != "platform_admin":
-        #     return HttpStatusCode.BAD_REQUEST.response("Only Platform Admin can create tenant users")
-
-        payload = await request.json()
-
-        tenant_id_str = payload.get("tenant_id")
-        name = payload.get("name")
-        email = payload.get("email")
-        mobile_no = payload.get("mobile_no")
-        attribute = payload.get("attribute") or {}
-        password = payload.get("password")
-
-        if not tenant_id_str:
-            return HttpStatusCode.BAD_REQUEST.response("tenant_id is required")
-
-        tenant_id = uuid.UUID(tenant_id_str)
-
-        tenant = await FRTUTenants.select(id=tenant_id)
-        if not tenant:
-            return HttpStatusCode.NOT_FOUND.response("Tenant not found")
-
-        if not name:
-            return HttpStatusCode.BAD_REQUEST.response("User name is required")
-
-        if not email and not mobile_no:
-            return HttpStatusCode.BAD_REQUEST.response("Email or mobile_no required")
-
-        filters = {}
-        if email:
-            filters["email"] = email
-        if mobile_no:
-            filters["mobile_no"] = mobile_no
-
-        existing = await FRTUUsers.select(**filters)
-        if existing:
-            return HttpStatusCode.BAD_REQUEST.response("User already exists")
-
-        salt = uuid.uuid4().hex
-        password_hash = hash_password(password, salt)
-
-        attribute["tenant_id"] = tenant_id_str
-
-        now = datetime.utcnow()
-
-        user_obj = await FRTUUsers.insert(
-            name=name,
-            email=email or "",
-            mobile_no=mobile_no or "",
-            password_hash=password_hash,
-            salt=salt,
-            attribute=attribute,
-            creation_time=now,
-            last_update_time=now
-        )
-
-        return HttpStatusCode.CREATED.response(
-            message="Tenant User created successfully",
-            data={
-                "user_id": str(user_obj.id),
-                "name": name,
-                "email": email,
-                "mobile_no": mobile_no,
-                "tenant_id": tenant_id_str
-            }
-        )
-
-    except Exception as e:
-        return HttpStatusCode.BAD_REQUEST.response(str(e))
-
-
-async def tenant_login(request: Request):
-    try:
-        payload = await request.json()
-        identifier = payload.get("email") or payload.get("mobile_no")
-        password = payload.get("password")
-
-        if not identifier or not password:
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={"message": "email or mobile_no and password are required"}
-            )
-        filters = {"email": identifier} if "@" in identifier else {"mobile_no": identifier}
-        filters["user_type"] = "tenant_admin"
-        
-        users = await FRTUUsers.select(**filters)
-        if not users:
-            return JSONResponse(
-                status_code=status.HTTP_404_NOT_FOUND,
-                content={"message": "Tenant Admin not found"}
-            )
-
-        user = users[0]
-        if hash_password(password, user["salt"]) != user["password_hash"]:
-            return JSONResponse(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                content={"message": "Invalid credentials"}
-            )
-
-        tenants = await FRTUTenants.select(admin_id=user["id"])
-        if not tenants:
-            return JSONResponse(
-                status_code=status.HTTP_404_NOT_FOUND,
-                content={"message": "No tenant organization found for this admin"}
-            )
-        
-        tenant = tenants[0]
-
-        token = create_access_token(
-            sub=str(user["id"]),
-            extra_claims={
-                "user_type": "tenant_admin",
-                "name": user["name"],
-                "tenant_id": str(tenant["id"]),
-                "tenant_name": tenant["name"]
-            },
-        )
-
-        return JSONResponse(
-            status_code=status.HTTP_200_OK,
-            content={
-                "message": "Tenant Admin login successful",
-                "data": {
-                    "access_token": token,
-                    "token_type": "Bearer",
-                    "user_id": str(user["id"]),
-                    "tenant_id": str(tenant["id"]),
-                    "tenant_name": tenant["name"]
-                }
-            }
-        )
-
-    except Exception as e:
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"message": str(e)}
-        )
-
-
-
-
-async def create_tenant(request: Request, authorization: str = Header(...)):
-    try:
-        perm_check = await verify_user_permission(authorization, resource="TENANT", action="edit")
-        if perm_check:
-            return perm_check
-
-        token = authorization.split(" ")[1]
-        token_payload = decode_access_token(token)
-        creator_user_id = token_payload.get("sub")
-        role_id = token_payload.get("role_id")
-
-        if not creator_user_id:
-            return HttpStatusCode.UNAUTHORIZED.response(message="Invalid token: user_id missing")
-        if not role_id:
-            return HttpStatusCode.UNAUTHORIZED.response(message="Invalid token: role_id missing")
-
-        payload = await request.json()
-        name = payload.get("name")
-        attribute = payload.get("attribute") or {}
-
-        if not name:
-            return HttpStatusCode.BAD_REQUEST.response(message="'name' field is required")
-
-        roles = await FRTURoles.select(id=uuid.UUID(role_id))
-        if not roles:
-            return HttpStatusCode.BAD_REQUEST.response(message="Invalid role_id in token")
-
-        role_name = roles[0]["name"].lower().strip()
-        admin_id = None
-
-        if role_name in ["admin", "super admin"]:
-            entity = await FRTUEntities.select(created_by=uuid.UUID(creator_user_id))
-            platform_admin_entity = None
-            for e in entity:
-                attr = e.get("attribute", {})
-                if attr.get("entity_type") == "platform_admin":
-                    platform_admin_entity = e
-                    break
-            if not platform_admin_entity:
-                return HttpStatusCode.BAD_REQUEST.response(message="No Platform Admin found for this root admin")
-            admin_id = platform_admin_entity["entity_id"]
-
-        elif role_name == "platform admin":
-            platform_admins = await FRTUPlatformAdmin.select(email=token_payload.get("email"))
-            if not platform_admins:
-                return HttpStatusCode.BAD_REQUEST.response(message="Platform Admin profile not found for this user")
-            admin_id = platform_admins[0]["id"]
-
+        if exact_matches:
+            filtered_tenants = exact_matches
         else:
-            return HttpStatusCode.FORBIDDEN.response(
-                message=f"Only Admin or Platform Admin can create tenants (you are '{role_name}')"
-            )
+            filtered_tenants = [t for t in tenants if name_lower in t.name.lower()]
+    else:
+        filtered_tenants = tenants
+    
+    filtered_tenants.sort(
+        key=lambda t: (
+            t.last_update_time or datetime.min,
+            t.creation_time or datetime.min
+        ),
+        reverse=True
+    )
 
-        if not admin_id:
-            return HttpStatusCode.BAD_REQUEST.response(message="Unable to resolve admin_id")
+    total_records = len(filtered_tenants)
+    total_pages = ceil(total_records / limit) if limit > 0 else 1
+    start = (page - 1) * limit
+    end = start + limit if limit > 0 else total_records
+    paginated = filtered_tenants[start:end]
 
-        existing = await FRTUTenants.select(admin_id=admin_id, name=name)
-        if existing:
-            return HttpStatusCode.BAD_REQUEST.response(message=f"Tenant '{name}' already exists under this admin")
+    tenant_list = [
+        {
+            "tenant_id": str(t.id),
+            "tenant_name": t.name,
+            "attribute": t.attribute or {},
+            "admin_id": str(t.admin_id),
+            "projects": await get_projects_for_tenant(t.id)
+        }
+        for t in paginated
+    ]
 
-        now = datetime.now(UTC).replace(tzinfo=None)
-        tenant = await FRTUTenants.insert(
-            admin_id=admin_id,
-            name=name,
-            attribute=attribute,
-            creation_time=now,
+    return HttpStatusCode.OK.response(
+        message="Tenants fetched successfully",
+        data={
+            "page": page,
+            "limit": limit,
+            "total_records": total_records,
+            "total_pages": total_pages,
+            "tenants": tenant_list
+        }
+    )
+
+
+async def update_tenant(tenant_id: UUID, data: dict, user_id: UUID):
+
+    tenant_list = await FRTUTenants.select(id=tenant_id)
+    if not tenant_list:
+        return HttpStatusCode.NOT_FOUND.response("Tenant not found")
+
+    tenant = tenant_list[0]
+
+    assignments = await FRTUUserAssignment.select(user_id=user_id)
+    admin_ids = [a.admin_id for a in assignments if a.admin_id]
+
+    if not admin_ids:
+        return HttpStatusCode.BAD_REQUEST.response("User is not assigned to any Platform Admin")
+
+    if tenant.admin_id not in admin_ids:
+        return HttpStatusCode.BAD_REQUEST.response("You are not allowed to update this tenant")
+
+    new_name = data.get("name", tenant.name)
+
+    current_attr = tenant.attribute or {}
+    new_attr = current_attr.copy()
+
+    if data.get("attribute"):
+        new_attr.update(data["attribute"])
+
+    now = datetime.utcnow()
+
+    await FRTUTenants.update(
+        conditions={"id": tenant_id},
+        name=new_name,
+        attribute=new_attr,
+        last_update_time=now
+    )
+
+    entity_list = await FRTUEntities.select(entity_id=tenant_id)
+    if entity_list:
+        entity = entity_list[0]
+
+        email = new_attr.get("email", entity.email_id)
+        mobile = new_attr.get("mobile_no", entity.mobile_no)
+
+        await FRTUEntities.update(
+            conditions={"entity_id": tenant_id},
+            name=new_name,
+            email_id=email,
+            mobile_no=mobile,
+            attribute=new_attr,
             last_update_time=now
         )
 
-        return HttpStatusCode.CREATED.response(
-            message="Tenant created successfully",
-            data={
-                "tenant_id": str(tenant.id),
-                "created_by": str(creator_user_id),
-                "role_id": str(role_id),
-                "admin_id": str(admin_id),
-                "name": name,
-                "attribute": attribute
-            },
+    return HttpStatusCode.OK.response(
+        message="Tenant updated successfully",
+        data={
+            "tenant_id": str(tenant_id),
+            "name": new_name,
+            "attribute": new_attr
+        }
+    )
+
+
+async def delete_tenant(tenant_id: UUID, user_id: UUID):
+
+    assignments = await FRTUUserAssignment.select(user_id=user_id)
+    admin_ids = [a.admin_id for a in assignments if a.admin_id]
+
+    if not admin_ids:
+        return HttpStatusCode.BAD_REQUEST.response(
+            "User is not assigned to any Platform Admin"
         )
 
-    except Exception as e:
-        return HttpStatusCode.BAD_REQUEST.response(message=str(e))
+    tenant_rows = await FRTUTenants.select(id=tenant_id)
+    if not tenant_rows:
+        return HttpStatusCode.NOT_FOUND.response("Tenant not found")
 
+    tenant = tenant_rows[0]
 
-async def update_tenant(request: Request, authorization: str = Header(...)):
+    if tenant.admin_id not in admin_ids:
+        return HttpStatusCode.BAD_REQUEST.response(
+            "You are not allowed to delete this tenant"
+        )
+
+    projects = await FRTUProjects.select(tenant_id=tenant_id)
+
+    if projects:
+        return HttpStatusCode.BAD_REQUEST.response({
+            "title": "Cannot Delete Tenant",
+            "message": "You cannot delete this Tenant until all associated Projects are deleted.",
+            "action_required": "delete_projects_first"
+        })
+
     try:
-        perm_check = await verify_user_permission(authorization, resource="TENANT", action="edit")
-        if perm_check:
-            return perm_check
-
-        tenant_name = request.query_params.get("tenant_name")
-        admin_name = request.query_params.get("admin_name")
-
-        if not tenant_name or not admin_name:
-            return HttpStatusCode.BAD_REQUEST.response(
-                message="Missing 'tenant_name' or 'admin_name' in query params"
-            )
-
-        admin = await FRTUPlatformAdmin.select(name=admin_name)
-        if not admin:
-            return HttpStatusCode.NOT_FOUND.response(message=f"Admin '{admin_name}' not found")
-
-        admin_id = admin[0]["id"]
-        tenants = await FRTUTenants.select(admin_id=admin_id, name=tenant_name)
-        if not tenants:
-            return HttpStatusCode.NOT_FOUND.response(
-                message=f"Tenant '{tenant_name}' not found for admin '{admin_name}'"
-            )
-
-        tenant_id = tenants[0]["id"]
-        payload = await request.json()
-        now = datetime.utcnow()
-
-        await FRTUTenants.update(
-            conditions={"id": tenant_id},
-            attribute=payload,
-            last_update_time=now
-        )
+        await FRTUTenants.delete(conditions={"id": tenant_id})
+        await FRTUEntities.delete(conditions={"entity_id": tenant_id})
 
         return HttpStatusCode.OK.response(
-            message=f"Tenant '{tenant_name}' updated successfully"
+            message="Tenant deleted successfully",
+            data={"tenant_id": str(tenant_id)}
         )
 
     except Exception as e:
-        return HttpStatusCode.BAD_REQUEST.response(message=str(e))
-
-
-async def delete_tenant(request: Request, authorization: str = Header(...)):
-    try:
-        perm_check = await verify_user_permission(authorization, resource="TENANT", action="edit")
-        if perm_check:
-            return perm_check
-
-        tenant_name = request.query_params.get("tenant_name")
-        admin_name = request.query_params.get("admin_name")
-
-        if not tenant_name or not admin_name:
-            return HttpStatusCode.BAD_REQUEST.response(
-                message="Missing 'tenant_name' or 'admin_name' in query params"
-            )
-
-        admin = await FRTUPlatformAdmin.select(name=admin_name)
-        if not admin:
-            return HttpStatusCode.NOT_FOUND.response(message=f"Admin '{admin_name}' not found")
-
-        admin_id = admin[0]["id"]
-        tenants = await FRTUTenants.select(admin_id=admin_id, name=tenant_name)
-        if not tenants:
-            return HttpStatusCode.NOT_FOUND.response(
-                message=f"Tenant '{tenant_name}' not found for admin '{admin_name}'"
-            )
-
-        tenant_id = tenants[0]["id"]
-        projects = await FRTUProjects.select(tenant_id=tenant_id)
-        if projects:
-            return HttpStatusCode.BAD_REQUEST.response(
-                message=f"Tenant '{tenant_name}' cannot be deleted because it has projects"
-            )
-
-        await FRTUTenants.delete(conditions={"id": tenant_id})
-        return HttpStatusCode.OK.response(message=f"Tenant '{tenant_name}' deleted successfully")
-
-    except Exception as e:
-        return HttpStatusCode.BAD_REQUEST.response(message=str(e))
+        return HttpStatusCode.INTERNAL_SERVER_ERROR.response(str(e))
 

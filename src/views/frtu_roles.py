@@ -38,26 +38,26 @@ async def create_role(role_create: FRTURoleCreate, user_id: str) -> FRTURoleRead
     return FRTURoleRead.from_orm(role)
 
 async def list_roles(skip: int = 0, limit: int = 100) -> List[FRTURoleRead]:
-    roles = await FRTURoles.select(offset=skip, limit=limit)
-    return [FRTURoleRead.from_orm(FRTURoles(**role)) for role in roles]
+    # roles = await FRTURoles.select(offset=skip, limit=limit)
+    # return [FRTURoleRead.from_orm(FRTURoles(**role)) for role in roles]
+    roles = await FRTURoles.select()
+    return roles[skip: skip + limit]
 
 
-async def get_role(role_id: str) -> FRTURoleRead:
-    try:
-        role_uuid = UUID(role_id)
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role_id")
-    role = await FRTURoles.get(role_uuid)
+async def get_role(role_id: UUID) -> FRTURoleRead:
+    # try:
+    #     role_uuid = UUID(role_id)
+    # except Exception:
+    #     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role_id")
+    role = await FRTURoles.select(id = role_id)
     if not role:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
-    return FRTURoleRead.from_orm(role)
+    # return FRTURoleRead.from_orm(role)
+    return role[0]
 
-async def update_role(role_id: str, role_update: FRTURoleUpdate) -> FRTURoleRead:
-    try:
-        role_uuid = UUID(role_id)
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role_id")
-    role = await FRTURoles.get(role_uuid)
+
+async def update_role(role_id: UUID, role_update: FRTURoleUpdate) -> FRTURoleRead:
+    role = await FRTURoles.select(id = role_id)
     if not role:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
 
@@ -76,14 +76,12 @@ async def update_role(role_id: str, role_update: FRTURoleUpdate) -> FRTURoleRead
 
     return FRTURoleRead.from_orm(role)
 
-async def delete_role(role_id: str):
-    try:
-        role_uuid = UUID(role_id)
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid role_id")
-    role = await FRTURoles.get(role_uuid)
+async def delete_role(role_id: UUID):
+    role = await FRTURoles.select(id = role_id)
     if not role:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
-    await role.delete()
+    # await role.delete()
+    await FRTURoles.delete(id = role_id)
+    return {"message": "Role deleted successfully"}
 
 

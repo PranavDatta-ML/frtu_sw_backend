@@ -1,498 +1,368 @@
 from datetime import UTC, datetime, timezone
+from math import ceil
 import uuid
-from zoneinfo import ZoneInfo
-from click import UUID
-from fastapi import HTTPException, Header, Request
+from uuid import UUID
+from fastapi import Header, Request
 from fastapi.responses import JSONResponse
-from src.config.auth_config import ALGORITHM, SECRET_KEY
 from src.models.frtu_sites import FRTUSites
-from src.schemas.frtu_projects import FRTUProjectCreate, FRTUProjectRead, FRTUProjectUpdate
+from src.models.frtu_tenants import FRTUTenants
+from src.models.frtu_user_assignment import FRTUUserAssignment
 from src.models.frtu_projects import FRTUProjects
 from src import Settings, HttpStatusCode
+from src.schemas.frtu_projects import FRTUProjectDelete, FRTUProjectDeleteByID
 from src.utils.access_token import decode_token
-from src.utils.schema import verify_schema
 import jwt # type: ignore
 
-TENANT_ID = "d4705477-cc27-4229-a0c3-04f55c3db721"
+async def create_project(data: dict, user_id: UUID):
 
-# ---------------- Create Project ----------------
-async def create_project(request: Request, settings: Settings, authorization: str = Header(...)):
-    if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
-        return HttpStatusCode.UNAUTHORIZED.response(message="Invalid Authorization header")
-    
-    tenant_token = authorization.split(" ")[1]
-    try:
-        tenant_data = decode_token(tenant_token)
-    except Exception as e:
-        return HttpStatusCode.UNAUTHORIZED.response(message=f"Tenant token decode failed: {str(e)}")
+    entity = data.get("entity", {})
+    tenant_id: UUID = entity.get("tenant_id")
+    name: str = entity.get("name")
 
-    tenant_id_str = tenant_data.get("tenant_id")
-    if not tenant_id_str:
-        return HttpStatusCode.UNAUTHORIZED.response(message="Invalid tenant token: tenant_id missing")
+    attribute = entity.copy()
+    if "tenant_id" in attribute:
+        del attribute["tenant_id"]
 
-    try:
-        tenant_id = uuid.UUID(tenant_id_str)
-    except Exception as e:
-        return HttpStatusCode.BAD_REQUEST.response(message=f"Invalid tenant_id in token: {str(e)}")
+    for key, value in attribute.items():
+        if isinstance(value, UUID):
+            attribute[key] = str(value)
 
-    payload = await request.json()
-    if payload.get("operation") != "create" or payload.get("target") != "project":
-        return HttpStatusCode.BAD_REQUEST.response(
-            message="Invalid request: operation must be 'create' and target must be 'project'"
-        )
+    assignments = await FRTUUserAssignment.select(user_id=user_id)
+    admin_ids = [a.admin_id for a in assignments if a.admin_id]
 
-    entity = payload.get("entity") or {}
-    name = entity.get("name")
-    proj_type = entity.get("type")
+    if not admin_ids:
+        return HttpStatusCode.BAD_REQUEST.response("User not mapped to any Platform Admin")
 
-    if not name or not proj_type:
-        return HttpStatusCode.BAD_REQUEST.response(
-            message="name and type are required fields inside entity"
+    tenant_rows = await FRTUTenants.select(id=tenant_id)
+    if not tenant_rows:
+        return HttpStatusCode.NOT_FOUND.response("Invalid tenant_id")
+
+    tenant = tenant_rows[0]
+
+    if tenant.admin_id not in admin_ids:
+        return HttpStatusCode.ACCESS_DENIED.response(
+            "You are not allowed to create a project under this tenant"
         )
 
     existing = await FRTUProjects.select(tenant_id=tenant_id, name=name)
     if existing:
         return HttpStatusCode.BAD_REQUEST.response(
-            message=f"Project with name '{name}' already exists for this tenant"
+            f"Project '{name}' already exists under this tenant"
         )
 
-    exclude_keys = {"name", "type"}
-    attributes = {k: v for k, v in entity.items() if k not in exclude_keys}
-    attributes["type"] = proj_type
     now = datetime.now(UTC).replace(tzinfo=None)
 
-    try:
-        value = await FRTUProjects.insert(
-            tenant_id=tenant_id,
-            name=name,
-            attribute=attributes,
-            creation_time=now,
-            last_update_time=now
-        )
+    project = await FRTUProjects.insert(
+        tenant_id=tenant_id,
+        name=name,
+        attribute=attribute,
+        creation_time=now,
+        last_update_time=now
+    )
 
-        response_data = {
-            "id": str(value.id),
-            "tenant_id": str(value.tenant_id),
-            "name": value.name,
-            "attribute": value.attribute,
-            "creation_time": value.creation_time.isoformat() if value.creation_time else None,
-            "last_update_time": value.last_update_time.isoformat() if value.last_update_time else None,
+    return HttpStatusCode.CREATED.response(
+        message="Project created successfully",
+        data={
+            "project_id": str(project.id),
+            "tenant_id": str(tenant_id),
+            "name": name,
+            "attribute": attribute
         }
+    )
 
-        return HttpStatusCode.CREATED.response(message="FRTU Project created!")
-
-    except Exception as e:
-        return HttpStatusCode.BAD_REQUEST.response(message=str(e))
 
 
 # # ----------------- READ PROJECTS -----------------
-async def read_projects(request: Request, authorization: str = Header(...)):
-    if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
-        return HttpStatusCode.response(HttpStatusCode.UNAUTHORIZED, "Invalid Authorization header")
+async def read_projects(
+    user_id: UUID,
+    tenant_id: UUID | None = None,
+    search: str | None = None,
+    page: int = 1,
+    limit: int = 10
+):
+    assignments = await FRTUUserAssignment.select(user_id=user_id)
+    admin_ids = [a.admin_id for a in assignments if a.admin_id]
 
-    tenant_token = authorization.split(" ")[1]
-    try:
-        tenant_data = decode_token(tenant_token)
-    except Exception as e:
-        return HttpStatusCode.response(HttpStatusCode.UNAUTHORIZED, f"Tenant token decode failed: {str(e)}")
+    if not admin_ids:
+        return HttpStatusCode.BAD_REQUEST.response("User is not assigned to any Platform Admin")
 
-    tenant_id_str = tenant_data.get("tenant_id")
-    if not tenant_id_str:
-        return HttpStatusCode.response(HttpStatusCode.UNAUTHORIZED, "Invalid tenant token: tenant_id missing")
+    tenant_list = await FRTUTenants.select(admin_id=admin_ids)
+    tenant_ids = [t.id for t in tenant_list]
 
-    try:
-        tenant_id = uuid.UUID(tenant_id_str)
-    except Exception as e:
-        return HttpStatusCode.response(HttpStatusCode.BAD_REQUEST, f"Invalid tenant_id in token: {str(e)}")
+    if tenant_id and tenant_id not in tenant_ids:
+        return HttpStatusCode.ACCESS_DENIED.response("You are not allowed to access this tenant")
 
-    payload = await request.json()
-    entity = payload.get("entity", {})
-    project_name = entity.get("name")
+    valid_tenants = [tenant_id] if tenant_id else tenant_ids
 
-    if payload.get("operation") != "read" or payload.get("target") != "project":
-        return HttpStatusCode.response(HttpStatusCode.BAD_REQUEST, "Invalid operation or target")
+    all_projects = []
+    for t_id in valid_tenants:
+        rows = await FRTUProjects.select(tenant_id=t_id)
+        all_projects.extend(rows)
 
-    try:
-        if project_name:
-            projects = await FRTUProjects.select(tenant_id=tenant_id, name=project_name)
+    if search:
+        s = search.lower()
+
+        exact = [p for p in all_projects if p.name.lower() == s]
+
+        if exact:
+            all_projects = exact
         else:
-            projects = await FRTUProjects.select(tenant_id=tenant_id)
+            all_projects = [p for p in all_projects if s in p.name.lower()]
 
-        if not projects:
-            if project_name:
-                return HttpStatusCode.NOT_FOUND.response(
-                    message=f"Tenant does not have project '{project_name}'"
-                )
-            return JSONResponse(
-                status_code=200,
-                content={"count": 0, "projects": []}
-            )
+    all_projects.sort(key=lambda p: p.last_update_time or datetime.min, reverse=True)
 
-        response_data = []
-        for proj in projects:
-            proj_dict = dict(proj)
+    total_records = len(all_projects)
+    total_pages = ceil(total_records / limit) if limit > 0 else 1
+    start = (page - 1) * limit
+    end = start + limit
+    page_records = all_projects[start:end]
 
-            attrs = proj_dict.pop("attribute", {}) or {}
-            for k, v in attrs.items():
-                proj_dict[k] = v
+    results = [
+        {
+            "project_id": str(p.id),
+            "tenant_id": str(p.tenant_id),
+            "name": p.name,
+            "attribute": p.attribute
+        }
+        for p in page_records
+    ]
 
-            if proj_dict.get("creation_time"):
-                proj_dict["creationTs"] = int(proj_dict["creation_time"].timestamp() * 1000)
-                proj_dict.pop("creation_time", None)
-            if proj_dict.get("last_update_time"):
-                proj_dict["lastUpdateTs"] = int(proj_dict["last_update_time"].timestamp() * 1000)
-                proj_dict.pop("last_update_time", None)
-            else:
-                proj_dict["lastUpdateTs"] = None
+    return HttpStatusCode.OK.response(
+        message="Projects fetched successfully",
+        data={
+            "page": page,
+            "limit": limit,
+            "total_records": total_records,
+            "total_pages": total_pages,
+            "projects": results
+        }
+    )
 
-            if proj_dict.get("id"):
-                proj_dict["id"] = str(proj_dict["id"])
-            if proj_dict.get("tenant_id"):
-                proj_dict.pop("tenant_id", None)  
 
-            sites = await FRTUSites.select(project_id=proj["id"])
-            proj_dict["childNames"] = [site["name"] for site in sites] if sites else []
+async def read_project_by_id(project_id: UUID, requester_id: UUID):
 
-            response_data.append(proj_dict)
+    assignments = await FRTUUserAssignment.select(user_id=requester_id)
+    admin_ids = [a.admin_id for a in assignments if a.admin_id]
 
-        if project_name:
-            response_data = response_data[0]
+    if not admin_ids:
+        return HttpStatusCode.ACCESS_DENIED.response("User not assigned to any Platform Admin")
 
-        return JSONResponse(
-            status_code=200,
-            content={
-                "count": len(projects),
-                "projects": response_data if isinstance(response_data, list) else [response_data]
-            }
-        )
+    project_list = await FRTUProjects.select(id=project_id)
+    if not project_list:
+        return HttpStatusCode.NOT_FOUND.response("Project not found")
 
-    except Exception as e:
-        return HttpStatusCode.response(HttpStatusCode.BAD_REQUEST, str(e))
+    project = project_list[0]
+
+    tenant = await FRTUTenants.select(id=project.tenant_id)
+    if not tenant:
+        return HttpStatusCode.NOT_FOUND.response("Tenant not found for this project")
+
+    if tenant[0].admin_id not in admin_ids:
+        return HttpStatusCode.ACCESS_DENIED.response("You cannot access this project")
+
+    return HttpStatusCode.OK.response(
+        message="Project fetched successfully",
+        data={
+            "project_id": str(project.id),
+            "tenant_id": str(project.tenant_id),
+            "name": project.name,
+            "attribute": project.attribute,
+            "creation_time": str(project.creation_time),
+            "last_update_time": str(project.last_update_time)
+        }
+    )
 
 
 # # ----------------- UPDATE PROJECTS -----------------
-async def update_project(request: Request, authorization: str = Header(...)):
-    if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
-        return HttpStatusCode.UNAUTHORIZED.response(message="Invalid Authorization header")
+async def update_project_by_name(data: dict, requester_id: UUID):
 
-    tenant_token = authorization.split(" ")[1]
-    try:
-        tenant_data = decode_token(tenant_token)
-    except Exception as e:
-        return HttpStatusCode.UNAUTHORIZED.response(message=f"Tenant token decode failed: {str(e)}")
-
-    tenant_id_str = tenant_data.get("tenant_id")
-    if not tenant_id_str:
-        return HttpStatusCode.UNAUTHORIZED.response(message="Invalid tenant token: tenant_id missing")
-
-    try:
-        tenant_id = uuid.UUID(tenant_id_str)
-    except Exception as e:
-        return HttpStatusCode.BAD_REQUEST.response(message=f"Invalid tenant_id in token: {str(e)}")
-
-    payload = await request.json()
-    entity = payload.get("entity", {})
+    entity = data.get("entity", {})
     project_name = entity.get("name")
-
-    if payload.get("operation") != "update" or payload.get("target") != "project":
-        return HttpStatusCode.BAD_REQUEST.response(message="Invalid operation or target")
+    updates = entity.copy()
+    updates.pop("name", None)
 
     if not project_name:
-        return HttpStatusCode.BAD_REQUEST.response(message="Project 'name' is required")
+        return HttpStatusCode.BAD_REQUEST.response("Project name is required")
 
-    try:
-        projects = await FRTUProjects.select(tenant_id=tenant_id, name=project_name)
-        if not projects:
-            return HttpStatusCode.BAD_REQUEST.response(
-                message=f"Tenant has no project named '{project_name}'"
-            )
+    assignments = await FRTUUserAssignment.select(user_id=requester_id)
+    admin_ids = [a.admin_id for a in assignments if a.admin_id]
 
-        project = projects[0]
-        current_attrs = project["attribute"] or {}
+    if not admin_ids:
+        return HttpStatusCode.ACCESS_DENIED.response("User not mapped to any Platform Admin")
 
-        for k, v in entity.items():
-            if k != "name":
-                current_attrs[k] = v
+    tenant_list = await FRTUTenants.select(admin_id=admin_ids)
+    tenant_ids = [t.id for t in tenant_list]
 
-        await FRTUProjects.update(
-            conditions={"id": project["id"]},
-            attribute=current_attrs,
-            last_update_time=datetime.now(UTC).replace(tzinfo=None)
+    if not tenant_ids:
+        return HttpStatusCode.BAD_REQUEST.response("No tenant found under this user")
+
+    projects = await FRTUProjects.select(name=project_name)
+    if not projects:
+        return HttpStatusCode.NOT_FOUND.response("Project not found with given name")
+
+    target_project = None
+    for p in projects:
+        if p.tenant_id in tenant_ids:
+            target_project = p
+            break
+
+    if not target_project:
+        return HttpStatusCode.ACCESS_DENIED.response(
+            "This project does not belong to your tenants"
         )
 
-        return HttpStatusCode.OK.response(message=f"Project '{project_name}' updated successfully")
+    project_id = target_project.id
+    tenant_id = target_project.tenant_id
+    current_attr = target_project.attribute or {}
+    current_attr.update(updates)
 
-    except Exception as e:
-        return HttpStatusCode.BAD_REQUEST.response(message=str(e))
+    now = datetime.now(UTC).replace(tzinfo=None)
+
+    await FRTUProjects.update(
+        conditions={"id": project_id},
+        attribute=current_attr,
+        last_update_time=now
+    )
+
+    return HttpStatusCode.OK.response(
+        message="Project updated successfully",
+        data={
+            "project_id": str(project_id),
+            "tenant_id": str(tenant_id),
+            "name": project_name,
+            "attribute": current_attr
+        }
+    )
+
+
+async def update_project_by_id(project_id: UUID, data: dict, user_id: UUID):
+
+    entity = data.get("entity", {})
+    updates = entity.copy()
+
+    project_rows = await FRTUProjects.select(id=project_id)
+    if not project_rows:
+        return HttpStatusCode.NOT_FOUND.response("Project not found")
+
+    project = project_rows[0]
+
+    assignments = await FRTUUserAssignment.select(user_id=user_id)
+    admin_ids = [a.admin_id for a in assignments if a.admin_id]
+
+    if not admin_ids:
+        return HttpStatusCode.ACCESS_DENIED.response("User not mapped to any Platform Admin")
+
+    tenant_list = await FRTUTenants.select(admin_id=admin_ids)
+    tenant_ids = [t.id for t in tenant_list]
+
+    if project.tenant_id not in tenant_ids:
+        return HttpStatusCode.ACCESS_DENIED.response("You are not allowed to update this project")
+
+    tenant_id = project.tenant_id
+    project_name = project.name
+    current_attr = project.attribute or {}
+
+    current_attr.update(updates)
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+
+    await FRTUProjects.update(
+        conditions={"id": project_id},
+        attribute=current_attr,
+        last_update_time=now
+    )
+
+    return HttpStatusCode.OK.response(
+        message="Project updated successfully",
+        data={
+            "project_id": str(project_id),
+            "tenant_id": str(tenant_id),
+            "name": project_name,
+            "attribute": current_attr
+        }
+    )
 
 
 # # ----------------- DELETE PROJECTS -----------------
-async def delete_project(request: Request, authorization: str = Header(...), settings: Settings = None):
+async def delete_project_by_name(data: FRTUProjectDelete, user_id: UUID):
 
-    if not isinstance(authorization, str) or not authorization.startswith("Bearer "):
-        return {
-            "http_code": 401,
-            "code": "UNAUTHORIZED",
-            "message": "Invalid Authorization header"
-        }
+    project_name = data.entity["name"]
 
-    tenant_token = authorization.split(" ")[1]
-    try:
-        tenant_data = decode_token(tenant_token)
-    except Exception as e:
-        return {
-            "http_code": 401,
-            "code": "UNAUTHORIZED",
-            "message": f"Tenant token decode failed: {str(e)}"
-        }
+    assignments = await FRTUUserAssignment.select(user_id=user_id)
+    admin_ids = [a.admin_id for a in assignments if a.admin_id]
 
-    tenant_id_str = tenant_data.get("tenant_id")
-    if not tenant_id_str:
-        return {
-            "http_code": 401,
-            "code": "UNAUTHORIZED",
-            "message": "Invalid tenant token: tenant_id missing"
-        }
+    if not admin_ids:
+        return HttpStatusCode.ACCESS_DENIED.response("User is not assigned to any Platform Admin")
 
-    try:
-        tenant_id = uuid.UUID(tenant_id_str)
-    except Exception as e:
-        return HttpStatusCode.BAD_REQUEST.response(message=f"Invalid tenant_id in token: {str(e)}")
+    tenant_list = await FRTUTenants.select(admin_id=admin_ids)
+    if not tenant_list:
+        return HttpStatusCode.BAD_REQUEST.response("No tenant available under this user")
 
-    payload = await request.json()
-    entity = payload.get("entity", {})
-    project_name = entity.get("name")
+    tenant_id = tenant_list[0].id
 
-    if payload.get("operation") != "delete" or payload.get("target") != "project":
-        return HttpStatusCode.BAD_REQUEST.response(message="Invalid operation or target")
+    project_rows = await FRTUProjects.select(tenant_id=tenant_id, name=project_name)
+    if not project_rows:
+        return HttpStatusCode.NOT_FOUND.response(f"Project '{project_name}' not found")
 
-    if not project_name:
-        return HttpStatusCode.BAD_REQUEST.response(message="Project 'name' is required")
+    project = project_rows[0]
+
+    children = await FRTUSites.select(project_id=project.id)
+    if children:
+        return HttpStatusCode.BAD_REQUEST.response({
+            "title": "Cannot Delete Project",
+            "message": f"Project '{project_name}' has Sites assigned. Delete sites first.",
+            "action_required": "delete_sites_first"
+        })
 
     try:
-        project = await FRTUProjects.select(tenant_id=tenant_id, name=project_name)
-        if not project:
-            return HttpStatusCode.NOT_FOUND.response(message=f"Tenant has no project named '{project_name}'")
+        await FRTUProjects.delete(conditions={"id": project.id})
 
-        project_id = project[0].id
-
-        child_sites = await FRTUSites.select(project_id=project_id)
-        if child_sites:
-            return HttpStatusCode.BAD_REQUEST.response(
-                message=f"Project '{project_name}' has {len(child_sites)} site(s). Delete them first."
-            )
-
-        await FRTUProjects.delete(conditions={"tenant_id": tenant_id, "name": project_name})
-
-        return {
-            "http_code": 200,
-            "code": "OK",
-            "message": f"Project '{project_name}' deleted successfully"
-        }
+        return HttpStatusCode.OK.response(
+            message="Project deleted successfully",
+            data={"project_id": str(project.id), "name": project_name}
+        )
 
     except Exception as e:
-        return HttpStatusCode.BAD_REQUEST.response(message=str(e))
+        return HttpStatusCode.SERVER_ERROR.response(str(e))
 
 
+async def delete_project_by_id(data: FRTUProjectDeleteByID, user_id: UUID):
 
+    project_id = UUID(data.entity["id"])
 
-# ----------------------- Project CRUD with hardcoded tenant id --------------------------------------
-# async def create_project(request: Request, settings: Settings):
-#     payload = await request.json()
+    assignments = await FRTUUserAssignment.select(user_id=user_id)
+    admin_ids = [a.admin_id for a in assignments if a.admin_id]
 
-#     if payload.get("operation") != "create" or payload.get("target") != "project":
-#         return HttpStatusCode.BAD_REQUEST.response(
-#             message="Invalid request: operation must be 'create' and target must be 'project'"
-#         )
+    if not admin_ids:
+        return HttpStatusCode.ACCESS_DENIED.response("User is not assigned to any Platform Admin")
 
-#     entity = payload.get("entity") or {}
-#     name = entity.get("name")
-#     proj_type = entity.get("type")
+    tenant_list = await FRTUTenants.select(admin_id=admin_ids)
+    if not tenant_list:
+        return HttpStatusCode.BAD_REQUEST.response("No tenant available under this user")
 
-#     if not name or not proj_type:
-#         return HttpStatusCode.BAD_REQUEST.response(
-#             message="name and type are required fields inside entity"
-#         )
+    tenant_id = tenant_list[0].id
 
-#     existing = await FRTUProjects.select(tenant_id=TENANT_ID, name=name)
-#     if existing:
-#         return HttpStatusCode.BAD_REQUEST.response(
-#             message=f"Project with name '{name}' already exists for this tenant"
-#         )
+    project_rows = await FRTUProjects.select(id=project_id, tenant_id=tenant_id)
+    if not project_rows:
+        return HttpStatusCode.NOT_FOUND.response("Project not found under this tenant")
 
-#     exclude_keys = {"name", "type"}
-#     attributes = {k: v for k, v in entity.items() if k not in exclude_keys}
-#     attributes["type"] = proj_type
+    project = project_rows[0]
 
-#     now = datetime.now(UTC).replace(tzinfo=None)
+    children = await FRTUSites.select(project_id=project_id)
+    if children:
+        return HttpStatusCode.BAD_REQUEST.response({
+            "title": "Cannot Delete Project",
+            "message": "Delete all sites under this project first",
+            "action_required": "delete_sites_first"
+        })
 
-#     try:
-#         value = await FRTUProjects.insert(
-#             tenant_id=TENANT_ID,
-#             name=name,
-#             attribute=attributes,
-#             creation_time=now,
-#             last_update_time=now
-#         )
+    try:
+        await FRTUProjects.delete(conditions={"id": project_id})
 
-#         response_data = {
-#             "id": str(value.id),
-#             "tenant_id": str(value.tenant_id),
-#             "name": value.name,
-#             "attribute": value.attribute,
-#             "creation_time": value.creation_time.isoformat() if value.creation_time else None,
-#             "last_update_time": value.last_update_time.isoformat() if value.last_update_time else None,
-#         }
+        return HttpStatusCode.OK.response(
+            message="Project deleted successfully",
+            data={"project_id": str(project_id)}
+        )
 
-#         return HttpStatusCode.CREATED.response(message="FRTU Project created!", data=response_data)
-
-#     except Exception as e:
-#         return HttpStatusCode.BAD_REQUEST.response(message=str(e))  
-
-# get list of projects/ project with children
-# async def read_projects(request: Request):
-#     payload = await request.json()
-#     entity = payload.get("entity", {})
-#     project_name = entity.get("name")
-
-#     if payload.get("operation") != "read" or payload.get("target") != "project":
-#         return HttpStatusCode.BAD_REQUEST.response(message="Invalid operation or target")
-
-#     try:
-#         if project_name:
-#             projects = await FRTUProjects.select(tenant_id=TENANT_ID, name=project_name)
-#         else:
-#             projects = await FRTUProjects.select(tenant_id=TENANT_ID)
-
-#         if not projects:
-#             return HttpStatusCode.NOT_FOUND.response(
-#                 message=f"Project '{project_name}' not found" if project_name else "No projects found",
-#                 data=[]
-#             )
-
-#         response_data = []
-#         for proj in projects:
-#             proj_dict = dict(proj)
-
-#             attrs = proj_dict.pop("attribute", {}) or {}
-#             for k, v in attrs.items():
-#                 proj_dict[k] = v
-
-#             if proj_dict.get("creation_time"):
-#                 proj_dict["creationTs"] = int(proj_dict["creation_time"].timestamp() * 1000)
-#                 proj_dict.pop("creation_time", None)
-#             if proj_dict.get("last_update_time"):
-#                 proj_dict["lastUpdateTs"] = int(proj_dict["last_update_time"].timestamp() * 1000)
-#                 proj_dict.pop("last_update_time", None)
-#             else:
-#                 proj_dict["lastUpdateTs"] = None
-
-#             if proj_dict.get("id"):
-#                 proj_dict["id"] = str(proj_dict["id"])
-#             if proj_dict.get("tenant_id"):
-#                 proj_dict["tenant_id"] = str(proj_dict["tenant_id"])
-
-#             sites = await FRTUSites.select(project_id=proj["id"])
-#             proj_dict["childNames"] = [site["name"] for site in sites] if sites else []
-
-#             response_data.append(proj_dict)
-
-#         if project_name:
-#             response_data = response_data[0]
-
-#         return HttpStatusCode.OK.response(
-#             message=f"{len(projects)} project(s) fetched",
-#             data=response_data
-#         )
-
-#     except Exception as e:
-#         return HttpStatusCode.BAD_REQUEST.response(message=str(e))
-
-# update project
-# async def update_project(request: Request):
-#     payload = await request.json()
-#     entity = payload.get("entity", {})
-#     project_name = entity.get("name")
-
-#     if payload.get("operation") != "update" or payload.get("target") != "project":
-#         return HttpStatusCode.BAD_REQUEST.response(message="Invalid operation or target")
-
-#     if not project_name:
-#         return HttpStatusCode.BAD_REQUEST.response(message="Project 'name' is required")
-
-#     try:
-#         projects = await FRTUProjects.select(tenant_id=TENANT_ID, name=project_name)
-#         if not projects:
-#             return HttpStatusCode.BAD_REQUEST.response(message=f"Project '{project_name}' not found")
-#         project = projects[0]
-
-#         current_attrs = project["attribute"] or {}
-#         for k, v in entity.items():
-#             if k != "name":
-#                 current_attrs[k] = v
-
-#         await FRTUProjects.update(
-#             conditions={"id": project["id"]},
-#             attribute=current_attrs,
-#             last_update_time=datetime.now(UTC).replace(tzinfo=None)
-#         )
-
-#         updated_project = await FRTUProjects.select(id=project["id"])
-#         proj = updated_project[0]
-
-#         proj_dict = dict(proj)
-#         attrs = proj_dict.pop("attribute", {}) or {}
-#         for k, v in attrs.items():
-#             proj_dict[k] = v
-
-#         if proj_dict.get("creation_time"):
-#             proj_dict["creation_time"] = proj_dict["creation_time"].isoformat()
-#         if proj_dict.get("last_update_time"):
-#             proj_dict["last_update_time"] = proj_dict["last_update_time"].isoformat()
-
-#         proj_dict["id"] = str(proj_dict["id"])
-#         proj_dict["tenant_id"] = str(proj_dict["tenant_id"])
-
-#         return HttpStatusCode.OK.response(message=f"Project '{project_name}' updated", data=proj_dict)
-#     except Exception as e:
-#         return HttpStatusCode.BAD_REQUEST.response(message=str(e))
-
-# delete project
-# async def delete_project(request: Request):
-#     payload = await request.json()
-#     entity = payload.get("entity", {})
-#     project_name = entity.get("name")
-
-#     if payload.get("operation") != "delete" or payload.get("target") != "project":
-#         return HttpStatusCode.BAD_REQUEST.response(message="Invalid operation or target")
-
-#     if not project_name:
-#         return HttpStatusCode.BAD_REQUEST.response(message="Project 'name' is required")
-
-#     try:
-#         project = await FRTUProjects.select(tenant_id=TENANT_ID, name=project_name)
-#         if not project:
-#             return HttpStatusCode.NOT_FOUND.response(
-#                 message=f"Project '{project_name}' not found"
-#             )
-        
-#         project_id = project[0].id
-
-#         child_sites = await FRTUSites.select(project_id=project_id)
-#         if child_sites:
-#             return HttpStatusCode.BAD_REQUEST.response(
-#                 message=f"Project '{project_name}' has {len(child_sites)} site(s). Delete them first."
-#             )
-
-#         await FRTUProjects.delete(conditions={"tenant_id": TENANT_ID, "name": project_name})
-#         return HttpStatusCode.OK.response(
-#             message=f"Project '{project_name}' deleted successfully"
-#         )
-
-#     except Exception as e:
-#         return HttpStatusCode.BAD_REQUEST.response(message=str(e))
-
-
-
-
-
+    except Exception as e:
+        return HttpStatusCode.SERVER_ERROR.response(str(e))

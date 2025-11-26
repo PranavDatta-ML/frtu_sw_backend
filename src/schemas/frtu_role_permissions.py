@@ -11,14 +11,8 @@ class AssignRolePermission(FRTURolePermissionBase):
     role_id: UUID = Field(..., description="Role ID")
     permission_id: UUID = Field(..., description="Permission ID")
 
-# class FRTURolePermissionCreate(FRTURolePermissionBase):
-#     @field_validator("creation_time")
-#     def set_creation_time(cls, v):
-#         return datetime.now(UTC)
-
-#     @field_validator("last_update_time")
-#     def set_last_update_time(cls, v):
-#         return datetime.now(UTC)
+class UpdateRolePermission(BaseModel):
+    new_permission_id: UUID = Field(..., description="New Permission ID to update to")
 
 class FRTURolePermissionRead(FRTURolePermissionBase):
     assigned_by: UUID

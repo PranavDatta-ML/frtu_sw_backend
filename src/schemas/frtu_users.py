@@ -1,5 +1,6 @@
 from uuid import UUID
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
+from typing import Dict
 from typing import Optional
 from datetime import datetime
 
@@ -12,13 +13,27 @@ class FRTUUserBase(BaseModel):
 class FRTUUserCreate(FRTUUserBase):
     password: str
 
-class FRTUUserRead(FRTUUserBase):
+class FRTUUserUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    mobile_no: Optional[str] = None
+    attribute: Optional[Dict] = None
+
+
+class FRTUUserRead(BaseModel):
     id: UUID
-    creation_time: Optional[datetime] = None
-    last_update_time: Optional[datetime] = None
+    name: str
+    email: str
+    mobile_no: str
+    is_active: bool
+    is_deleted: bool
+    attribute: dict
+    creation_time: datetime
+    last_update_time: datetime
+    created_by: Optional[UUID] = None
 
     class Config:
-        from_attributes = True
+        orm_mode = True
 
 class FRTUUserLogin(BaseModel):
     email: Optional[str] = None

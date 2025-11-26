@@ -18,6 +18,7 @@ from src.routers.frtu_modules_auto_discover import router as FRTUModulesAutoDisc
 from src.routers.frtu_modules_slot_detail import router as FRTUModulesSlotDetailRouter
 from src.routers.frtu_manual_module import router as FRTUManualModuleRouter
 from src.routers.frtu_configure_di_channel import router as FRTUChannelDIConfigureRouter
+from src.routers.frtu_protocols import router as FRTUProtocolRouter
 
 
 def include_router(app):
@@ -50,6 +51,7 @@ def include_router(app):
     app.include_router(FRTUModulesSlotDetailRouter, prefix='')
     app.include_router(FRTUManualModuleRouter, prefix='')
     app.include_router(FRTUChannelDIConfigureRouter, prefix='')
+    app.include_router(FRTUProtocolRouter, prefix='')
 
     app.include_router(TaskRouter, prefix='/api/v1')  # Tasks route registration
     

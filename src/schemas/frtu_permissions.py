@@ -34,11 +34,12 @@ class FRTUPermissionCreate(FRTUPermissionBase):
 class FRTUPermissionUpdate(FRTUPermissionBase):
     attribute: Optional[Any] = None
 
-class FRTUPermissionRead(FRTUPermissionBase):
+class FRTUPermissionRead(BaseModel):
     id: UUID
-    user_id: UUID
+    user_id: Optional[UUID] = None
     creation_time: Optional[datetime] = None
     last_update_time: Optional[datetime] = None
+    attribute: Optional[Any] = None
 
     class Config:
         from_attributes = True
