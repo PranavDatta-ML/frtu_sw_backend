@@ -1,46 +1,81 @@
-from typing import Optional
+from typing import Any, Dict, Optional
 from uuid import UUID
 from datetime import datetime, UTC
 from pydantic import BaseModel, Field, field_validator
 
 from src.enums.FrtuDeviceType import FrtuDeviceType
 
+
 class FRTUDeviceBase(BaseModel):
-    site_id: UUID = Field(..., description="The site id field is required.")
-    name: str = Field(..., description="The name field is required.")
+    name: str
     type: FrtuDeviceType
-    attribute: Optional[dict] = None
-
-    last_update_time: Optional[datetime] = None
+    attribute: Optional[Dict] = None
     creation_time: Optional[datetime] = None
+    last_update_time: Optional[datetime] = None
 
-class FRTUDeviceCreate(FRTUDeviceBase):
-    @field_validator("last_update_time")
-    def set_last_update_time(cls, value: datetime):
-        return datetime.now(UTC)
+class FRTUDeviceCreateEntity(BaseModel):
+    name: str
+    type: str
+    label: Optional[str] = None
+    description: Optional[str] = None
+    parentName: Optional[str] = None
+    site_id: Optional[UUID] = None
+    module: Optional[str] = None
+    no_of_Slave_Rack: Optional[str] = None
 
-    @field_validator("creation_time")
-    def set_creation_time(cls, value: datetime):
-        return datetime.now(UTC)
+    class Config:
+        extra = "allow"
 
+class FRTUDeviceCreate(BaseModel):
+    operation: str
+    target: str
+    entity: FRTUDeviceCreateEntity
 
-# Schema for update (partial fields)
-class FRTUDeviceUpdate(BaseModel):
+class FRTUDeviceCreate(BaseModel):
+    operation: str
+    target: str
+    entity: FRTUDeviceCreateEntity
+
+class FRTUDeviceReadEntity(BaseModel):
+    id: Optional[UUID] = None
     name: Optional[str] = None
-    type: Optional[str] = None
-    attribute: Optional[dict] = None
-    last_update_time: Optional[datetime] = None
 
-    @field_validator("last_update_time")
-    def set_last_update_time(cls, value: datetime):
-        return datetime.now(UTC)
+class FRTUDeviceRead(BaseModel):
+    operation: str
+    target: str
+    entity: Optional[FRTUDeviceReadEntity] = None
 
 
-# Schema for reading from DB (including ID and timestamps)
-class FRTUDeviceRead(FRTUDeviceBase):
+class FRTUDeviceUpdateEntity(BaseModel):
+    id: Optional[UUID] = None
+    name: Optional[str] = None
+
+    class Config:
+        extra = "allow"
+
+class FRTUDeviceUpdate(BaseModel):
+    operation: str
+    target: str
+    entity: FRTUDeviceUpdateEntity
+
+class FRTUDeviceDeleteEntity(BaseModel):
+    id: Optional[UUID] = None
+    name: Optional[str] = None
+
+class FRTUDeviceDelete(BaseModel):
+    operation: str
+    target: str
+    entity: FRTUDeviceDeleteEntity
+
+class FRTUDeviceOut(BaseModel):
     id: UUID
-    creation_time: Optional[datetime] = None
-    last_update_time: Optional[datetime] = None
+    site_id: UUID
+    name: str
+    type: str
+    attribute: Optional[Dict]
+    creation_time: Optional[datetime]
+    last_update_time: Optional[datetime]
 
     class Config:
         orm_mode = True
+

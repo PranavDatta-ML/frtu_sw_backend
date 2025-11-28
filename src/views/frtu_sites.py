@@ -1,572 +1,469 @@
 from datetime import UTC, datetime
-import uuid
+from uuid import UUID
 from zoneinfo import ZoneInfo
 from fastapi import Depends, HTTPException, Header, Request
 from src.config.auth_config import ALGORITHM, SECRET_KEY
+from src.enums.FrtuDeviceType import FrtuDeviceType
 from src.models.frtu_devices import FRTUDevices
+from src.models.frtu_user_assignment import FRTUUserAssignment
 from src.schemas.frtu_projects import FRTUProjectCreate
 from src.models.frtu_sites import FRTUSites
 from src.models.frtu_projects import FRTUProjects
 from src import Settings, HttpStatusCode
 from src.utils.access_token import decode_token
-from src.utils.jwt_tokens import decode_access_token
-from src.utils.schema import verify_schema
-import jwt # type: ignore
+
+def safe_get(data, key, default=""):
+    if isinstance(data, dict):
+        return data.get(key, default)
+    return getattr(data, key, default)
 
 
 # ---------------- Create Site ----------------
-async def create_site(request: Request, authorization: str = Header(..., convert_underscores=False), settings: Settings = Depends(Settings.get_settings)):
+async def create_site(data: dict, user_id: UUID):
 
-    if not authorization or not authorization.startswith("Bearer "):
-        return {"http_code": 401,"code": "UNAUTHORIZED","message": "Invalid Authorization header"}
-
-    tenant_token = authorization.split(" ")[1]
-    try:
-        tenant_data = decode_access_token(tenant_token)
-    except Exception as e:
-        return {"http_code": 401,"code": "UNAUTHORIZED","message": f"Tenant token decode failed: {str(e)}"}
-
-    tenant_id_str = tenant_data.get("tenant_id")
-    if not tenant_id_str:
-        return {"http_code": 401,"code": "UNAUTHORIZED","message": "Invalid tenant token: tenant_id missing"}
-
-    try:
-        tenant_id = uuid.UUID(tenant_id_str)
-    except Exception as e:
-        return HttpStatusCode.BAD_REQUEST.response(message=f"Invalid tenant_id in token: {str(e)}")
-
-    payload = await request.json()
-    if payload.get("operation") != "create" or payload.get("target") != "site":
-        return HttpStatusCode.BAD_REQUEST.response(message="Invalid request: operation must be 'create' and target must be 'site'")
-
-    entity = payload.get("entity") or {}
+    entity = data.get("entity", {})
     name = entity.get("name")
-    site_type = entity.get("type")
-    parent_name = entity.get("parentName")
+    
+    if not name:
+        return HttpStatusCode.BAD_REQUEST.response("Site name is required")
+    
+    project_id = entity.get("project_id")
+    if not project_id:
+        return HttpStatusCode.BAD_REQUEST.response("project_id is required")
+    
+    try:
+        project_id = UUID(entity.get("project_id"))
+    except:
+        return HttpStatusCode.BAD_REQUEST.response("Invalid project_id format. Must be UUID.")
 
-    if not name or not site_type or not parent_name:
-        return HttpStatusCode.BAD_REQUEST.response(message="Site 'name', 'type' and 'parentName' are required fields")
+    project_rows = await FRTUProjects.select(id=project_id)
+    if not project_rows:
+        return HttpStatusCode.NOT_FOUND.response("Project not found")
 
-    parent_project = await FRTUProjects.select(tenant_id=tenant_id, name=parent_name)
-    if not parent_project:
-        return HttpStatusCode.NOT_FOUND.response(message=f"Tenant has no project named '{parent_name}'")
+    project_row = project_rows[0]
 
-    existing = await FRTUSites.select(project_id=parent_project[0].id, name=name)
-    if existing:
-        return HttpStatusCode.BAD_REQUEST.response(message=f"Site with name '{name}' already exists in project '{parent_name}'")
+    # build a plain dict using known columns; no lazy loading later
+    target_project = {
+        "id": str(project_row.id),
+        "name": project_row.name,        # or project_row.project_name
+        # add any other needed columns explicitly
+    }
 
-    exclude_keys = {"name", "type", "parentName"}
-    attributes = {k: v for k, v in entity.items() if k not in exclude_keys}
-    attributes["type"] = site_type
+    # assignments = await FRTUUserAssignment.select(user_id=user_id)
+    # allowed_tenants = [a.scope_id for a in assignments if a.scope_type == "TENANT"]
+
+    # if target_project.tenant_id not in allowed_tenants:
+    #     return HttpStatusCode.ACCESS_DENIED.response("You are not allowed to create site under this project")
+
+    device_type = entity.get("device_type")
+    if device_type:
+        try:
+            device_type = FrtuDeviceType(device_type).value
+        except Exception:
+            return HttpStatusCode.BAD_REQUEST.response(
+                "Invalid device_type. Allowed values: FRTU, RTU"
+            )
+
+    attribute = entity.copy()
+    attribute["device_type"] = device_type
 
     now = datetime.now(UTC).replace(tzinfo=None)
 
-    try:
-        await FRTUSites.insert(
-            project_id=parent_project[0].id,
-            name=name,
-            attribute=attributes,
-            creation_time=now,
-            last_update_time=now
-        )
+    existing = await FRTUSites.select(project_id=project_id, name=name)
+    if existing:
+        return HttpStatusCode.BAD_REQUEST.response("Site already exists under this project")
 
-        return {"http_code": 201, "code": "CREATED", "message": "FRTU Site created!"}
+    site = await FRTUSites.insert(
+        project_id=project_id,
+        name=name,
+        attribute=attribute,
+        creation_time=now,
+        last_update_time=now
+    )
 
-    except Exception as e:
-        return HttpStatusCode.BAD_REQUEST.response(message=str(e))
+    merged_data = {
+        "id": str(site.id),
+        "project_id": str(project_id),
+        "name": site.name,
+        "device_type": device_type,
+        "project_name": target_project["name"],
+        "creation_time": site.creation_time.isoformat() if site.creation_time else None,
+        "last_update_time": site.last_update_time.isoformat() if site.last_update_time else None,
+    }   
+
+    merged_data.update(attribute)
+
+    return HttpStatusCode.CREATED.response(
+        message="Site created successfully",
+        data=merged_data,
+    )
 
 
 # ---------------- Read Sites ---------------- 
-async def read_sites(
-    request: Request,
-    authorization: str = Header(..., convert_underscores=False),
-    settings: Settings = Depends(Settings.get_settings)
-):
-    if not authorization or not authorization.startswith("Bearer "):
-        return {
-            "http_code": 401,
-            "code": "UNAUTHORIZED",
-            "message": "Invalid Authorization header"
-        }
+async def read_sites(data: dict, requester_id: UUID, name: str | None, page: int, limit: int):
 
-    tenant_token = authorization.split(" ")[1]
-    try:
-        tenant_data = decode_token(tenant_token)
-    except Exception as e:
-        return {
-            "http_code": 401,
-            "code": "UNAUTHORIZED",
-            "message": f"Tenant token decode failed: {str(e)}"
-        }
+    entity = data.get("entity") or {}
+    payload_name = entity.get("name") if isinstance(entity, dict) else None
+    final_search = payload_name or name or None
 
-    tenant_id_str = tenant_data.get("tenant_id")
-    if not tenant_id_str:
-        return {
-            "http_code": 401,
-            "code": "UNAUTHORIZED",
-            "message": "Invalid tenant token: tenant_id missing"
-        }
+    all_rows = await FRTUSites.select()
+    site_list = []
 
-    try:
-        tenant_id = uuid.UUID(tenant_id_str)
-    except Exception as e:
-        return HttpStatusCode.BAD_REQUEST.response(message=f"Invalid tenant_id in token: {str(e)}")
+    for row in all_rows:
+        project_row = None
+        project_rows = await FRTUProjects.select(id=row.project_id)
+        if project_rows:
+            project_row = project_rows[0]
 
-    payload = await request.json()
-    entity = payload.get("entity", {})
-    site_name = entity.get("name")
-    project_name = entity.get("projectName")  
+        attr = row.attribute or {}
 
-    if payload.get("operation") != "read" or payload.get("target") != "site":
-        return HttpStatusCode.BAD_REQUEST.response(message="Invalid operation or target")
+        site_list.append({
+            "id": str(row.id),
+            "name": row.name,
+            "type": "site",
+            "label": attr.get("label"),
+            "description": attr.get("description"),
+            "creationTs": int(row.creation_time.timestamp()*1000) if row.creation_time else None,
+            "lastUpdateTs": int(row.last_update_time.timestamp()*1000) if row.last_update_time else None,
+            "parentName": project_row.name if project_row else "",
+            "project_name": project_row.name if project_row else "",
+            "project_id": str(row.project_id),
+            "latitude": attr.get("latitude"),
+            "longitude": attr.get("longitude"),
+            "status": attr.get("status"),
+            "deviceType": attr.get("device_type"),
+        })
 
-    try:
-        filters = {}
+    if final_search:
+        final_search = final_search.lower()
+        site_list = [s for s in site_list if final_search in s["name"].lower()]
 
-        if project_name:
-            parent_projects = await FRTUProjects.select(tenant_id=tenant_id, name=project_name)
-            if not parent_projects:
-                return {
-                    "http_code": 404,
-                    "code": "NOT_FOUND",
-                    "message": f"Tenant has no project named '{project_name}'"
-                }
-            filters["project_id"] = parent_projects[0].id
+    total_records = len(site_list)
+    total_pages = (total_records + limit - 1) // limit
 
-        if site_name:
-            filters["name"] = site_name
+    start = (page - 1) * limit
+    end = start + limit
+    paginated_sites = site_list[start:end]
 
-        if not filters:
-            parent_projects = await FRTUProjects.select(tenant_id=tenant_id)
-            if not parent_projects:
-                return {
-                    "http_code": 404,
-                    "code": "NOT_FOUND",
-                    "message": "No projects found for this tenant"
-                }
-            filters["project_id"] = [p.id for p in parent_projects]
-
-        sites = await FRTUSites.select(**filters)
-        if not sites:
-            return {
-                "http_code": 404,
-                "code": "NOT_FOUND",
-                "message": f"Tenant does not have site {site_name}!" if site_name else "No sites found for this tenant"
-            }
-
-        response_sites = []
-        for site in sites:
-            site_dict = dict(site)
-            attrs = site_dict.pop("attribute", {}) or {}
-            for k, v in attrs.items():
-                site_dict[k] = v
-
-            parent_project = await FRTUProjects.select(id=site_dict.get("project_id"))
-            site_dict["parentName"] = parent_project[0].name if parent_project else None
-
-            from src.models.frtu_devices import FRTUDevices
-            devices = await FRTUDevices.select(site_id=site_dict.get("id"))
-            if devices:
-                site_dict["childNames"] = [d.name for d in devices]
-
-            site_dict["id"] = str(site_dict["id"])
-            site_dict["creationTs"] = int(site_dict["creation_time"].timestamp() * 1000) if site_dict.get("creation_time") else None
-            site_dict["lastUpdateTs"] = int(site_dict["last_update_time"].timestamp() * 1000) if site_dict.get("last_update_time") else None
-
-            site_dict["type"] = "site"
-            site_dict["status"] = site_dict.get("status", "0")
-            site_dict["deviceType"] = site_dict.get("type", "FRTU")
-            site_dict.pop("creation_time", None)
-            site_dict.pop("last_update_time", None)
-            site_dict.pop("project_id", None)
-
-            response_sites.append(site_dict)
-
-        return {
-            "count": len(response_sites),
-            "sites": response_sites
-        }
-
-    except Exception as e:
-        return HttpStatusCode.BAD_REQUEST.response(message=str(e))
+    return {
+        "http_code": 200,
+        "code": "OK",
+        "message": "Sites fetched successfully",
+        "page": page,
+        "limit": limit,
+        "total_records": total_records,
+        "total_pages": total_pages,
+        "sites": paginated_sites
+    }
 
 
-# ---------------- Update Site ----------------
-async def update_site(request: Request, authorization: str = Header(..., convert_underscores=False), settings: Settings = Depends(Settings.get_settings)):
+# ---------------- Read Site By ID ----------------
+async def read_site_by_id(site_id: UUID, requester_id: UUID, data: dict):
+    rows = await FRTUSites.select(id=site_id)
+    if not rows:
+        return HttpStatusCode.NOT_FOUND.response("Site not found")
 
-    if not authorization or not authorization.startswith("Bearer "):
-        return {
-            "http_code": 401,
-            "code": "UNAUTHORIZED",
-            "message": "Invalid Authorization header"
-        }
+    row = rows[0]
+    attr = row.attribute or {}
 
-    tenant_token = authorization.split(" ")[1]
-    try:
-        tenant_data = decode_token(tenant_token)
-    except Exception as e:
-        return {
-            "http_code": 401,
-            "code": "UNAUTHORIZED",
-            "message": f"Tenant token decode failed: {str(e)}"
-        }
+    parent_name = ""
+    project_name = ""
+    project_rows = await FRTUProjects.select(id=row.project_id)
 
-    tenant_id_str = tenant_data.get("tenant_id")
-    if not tenant_id_str:
-        return {
-            "http_code": 401,
-            "code": "UNAUTHORIZED",
-            "message": "Invalid tenant token: tenant_id missing"
-        }
+    if project_rows:
+        project = project_rows[0]
+        project_name = project.name
+        parent_name = project.name
 
-    try:
-        tenant_id = uuid.UUID(tenant_id_str)
-    except Exception as e:
-        return HttpStatusCode.BAD_REQUEST.response(message=f"Invalid tenant_id in token: {str(e)}")
+    site_obj = {
+        "id": str(row.id),
+        "name": row.name,
+        "type": "site",
+        "label": attr.get("label"),
+        "description": attr.get("description"),
 
-    payload = await request.json()
-    if payload.get("operation") != "update" or payload.get("target") != "site":
-        return HttpStatusCode.BAD_REQUEST.response(
-            message="Invalid request: operation must be 'update' and target must be 'site'"
-        )
+        "creationTs": int(row.creation_time.timestamp() * 1000)
+        if row.creation_time else None,
 
-    entity = payload.get("entity") or {}
+        "lastUpdateTs": int(row.last_update_time.timestamp() * 1000)
+        if row.last_update_time else None,
+
+        "parentName": parent_name,
+        "project_name": project_name,
+        "project_id": str(row.project_id),
+
+        "latitude": attr.get("latitude"),
+        "longitude": attr.get("longitude"),
+        "status": attr.get("status"),
+        "deviceType": attr.get("device_type"),
+    }
+
+    return {
+        "http_code": 200,
+        "code": "OK",
+        "message": "Site fetched successfully",
+        "count": 1,
+        "sites": [site_obj]
+    }
+
+
+# ---------------- Update Site By Name ----------------
+async def update_site_by_name(data: dict, requester_id: UUID):
+
+    entity = data.get("entity") or {}
     site_name = entity.get("name")
     if not site_name:
-        return HttpStatusCode.BAD_REQUEST.response(message="Site 'name' is required to update")
+        return HttpStatusCode.BAD_REQUEST.response("Site name is required")
 
-    try:
-        site = await FRTUSites.select(name=site_name)
-        if not site:
-            return {
-                "http_code": 404,
-                "code": "NOT_FOUND",
-                "message": f"Site '{site_name}' not found"
-            }
+    rows = await FRTUSites.select(name=site_name)
+    if not rows:
+        return HttpStatusCode.NOT_FOUND.response("Site not found")
 
-        site_obj = site[0]
+    orm = rows[0]
+    row = {c.name: getattr(orm, c.name) for c in orm.__table__.columns}
 
-        parent_project = await FRTUProjects.select(id=site_obj.project_id, tenant_id=tenant_id)
-        if not parent_project:
-            return {
-                "http_code": 403,
-                "code": "FORBIDDEN",
-                "message": f"Tenant does not have access to the project of site '{site_name}'"
-            }
+    row_id = row["id"]
+    project_id = row["project_id"]
+    existing_attr = row.get("attribute") or {}
 
-        exclude_keys = {"name", "type", "project_id"}
-        updated_attrs = {k: v for k, v in entity.items() if k not in exclude_keys}
+    updated_attr = existing_attr.copy()
+    for key, value in entity.items():
+        if key != "name" and value is not None:
+            updated_attr[key] = value
 
-        existing_attrs = site_obj.attribute or {}
-        existing_attrs.update(updated_attrs)
+    now = datetime.now(UTC).replace(tzinfo=None)
 
-        now = datetime.now(UTC).replace(tzinfo=None)
+    await FRTUSites.update(
+        conditions={"id": row_id},
+        attribute=updated_attr,
+        last_update_time=now
+    )
 
-        await FRTUSites.update(
-            conditions={"name": site_name},
-            attribute=existing_attrs,
-            last_update_time=now
-        )
+    project_rows = await FRTUProjects.select(id=project_id)
+    project_name = ""
+    if project_rows:
+        project = project_rows[0]
+        project_data = {c.name: getattr(project, c.name) for c in project.__table__.columns}
+        project_name = project_data.get("name", "")
 
-        response_data = dict(site_obj)
-        response_data.pop("attribute", None)
-        response_data.update(existing_attrs)
-        response_data["parentName"] = parent_project[0].name
-        response_data.pop("project_id", None)
-
-        if response_data.get("creation_time"):
-            response_data["creation_time"] = response_data["creation_time"].isoformat()
-        if response_data.get("last_update_time"):
-            response_data["last_update_time"] = response_data["last_update_time"].isoformat()
-        if response_data.get("id"):
-            response_data["id"] = str(response_data["id"])
-
-        return {
-            "http_code": 200,
-            "code": "OK",
-            "message": f"Site '{site_name}' updated successfully"
+    return HttpStatusCode.OK.response(
+        message="Site updated successfully",
+        data={
+            "id": str(row_id),
+            "name": row["name"],
+            "project_id": str(project_id),
+            "project_name": project_name,
+            "creationTs": int(row["creation_time"].timestamp() * 1000) if row.get("creation_time") else None,
+            "lastUpdateTs": int(now.timestamp() * 1000),
+            "attribute": updated_attr
         }
+    )
 
-    except Exception as e:
-        return HttpStatusCode.BAD_REQUEST.response(message=str(e))
+
+
+async def update_site_by_id(data: dict, requester_id: UUID):
+
+    entity = data.get("entity") or {}
+
+    raw_id = entity.get("id")
+    if not raw_id:
+        return HttpStatusCode.BAD_REQUEST.response("Site ID is required")
+
+    site_id = raw_id if isinstance(raw_id, UUID) else UUID(str(raw_id))
+
+    rows = await FRTUSites.select(id=site_id)
+    if not rows:
+        return HttpStatusCode.NOT_FOUND.response("Site not found")
+
+    orm = rows[0]
+    row = {c.name: getattr(orm, c.name) for c in orm.__table__.columns}
+
+    project_id = row["project_id"]
+    existing_attr = row.get("attribute") or {}
+    updated_attr = existing_attr.copy()
+
+    updated_name = row["name"]
+
+    for key, value in entity.items():
+        if key == "name" and value:
+            updated_name = value
+        elif key != "id" and value is not None:
+            updated_attr[key] = value
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+
+    await FRTUSites.update(
+        conditions={"id": site_id},
+        name=updated_name,
+        attribute=updated_attr,
+        last_update_time=now
+    )
+
+    project_rows = await FRTUProjects.select(id=project_id)
+    project_name = ""
+    if project_rows:
+        project = project_rows[0]
+        project_dict = {c.name: getattr(project, c.name) for c in project.__table__.columns}
+        project_name = project_dict.get("name", "")
+
+    return HttpStatusCode.OK.response(
+        message="Site updated successfully",
+        data={
+            "id": str(site_id),
+            "name": updated_name,
+            "project_id": str(project_id),
+            "project_name": project_name,
+            "creationTs": int(row["creation_time"].timestamp() * 1000) if row.get("creation_time") else None,
+            "lastUpdateTs": int(now.timestamp() * 1000),
+            "attribute": updated_attr
+        }
+    )
+  
+
+# ---------------- Update Site By Name or ID----------------
+async def update_site(data: dict, requester_id: UUID):
+
+    entity = data.get("entity") or {}
+
+    raw_id = entity.get("id")
+    site_name = entity.get("name")
+    if raw_id:
+        try:
+            site_id = raw_id if isinstance(raw_id, UUID) else UUID(str(raw_id))
+        except:
+            return HttpStatusCode.BAD_REQUEST.response("Invalid site ID format")
+
+        rows = await FRTUSites.select(id=site_id)
+        if not rows:
+            return HttpStatusCode.NOT_FOUND.response("Site not found")
+        orm = rows[0]
+
+    else:
+        if not site_name:
+            return HttpStatusCode.BAD_REQUEST.response("Either site ID or site name is required")
+
+        rows = await FRTUSites.select(name=site_name)
+        if not rows:
+            return HttpStatusCode.NOT_FOUND.response("Site not found")
+        orm = rows[0]
+        site_id = getattr(orm, "id")
+
+    row = {c.name: getattr(orm, c.name) for c in orm.__table__.columns}
+
+    updated_name = row["name"]
+    project_id = row["project_id"]
+    existing_attr = row.get("attribute") or {}
+    updated_attr = existing_attr.copy()
+
+    for key, value in entity.items():
+        if key == "name" and value:
+            updated_name = value
+        elif key not in ("id",) and value is not None:
+            updated_attr[key] = value
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+
+    await FRTUSites.update(
+        conditions={"id": site_id},
+        name=updated_name,
+        attribute=updated_attr,
+        last_update_time=now
+    )
+
+    project_rows = await FRTUProjects.select(id=project_id)
+    project_name = ""
+    if project_rows:
+        project = project_rows[0]
+        project_dict = {c.name: getattr(project, c.name) for c in project.__table__.columns}
+        project_name = project_dict.get("name", "")
+
+    return HttpStatusCode.OK.response(
+        message="Site updated successfully",
+        data={
+            "id": str(site_id),
+            "name": updated_name,
+            "project_id": str(project_id),
+            "project_name": project_name,
+            "creationTs": int(row["creation_time"].timestamp() * 1000) if row.get("creation_time") else None,
+            "lastUpdateTs": int(now.timestamp() * 1000),
+            "attribute": updated_attr
+        }
+    )
 
 
 # ---------------- Delete Site ----------------
-async def delete_site(request: Request,authorization: str = Header(..., convert_underscores=False),settings: Settings = Depends(Settings.get_settings)):
-    if not authorization or not authorization.startswith("Bearer "):
-        return {"http_code": 401,"code": "UNAUTHORIZED","message": "Invalid Authorization header"}
+async def delete_site_by_name(data: dict, requester_id: UUID):
 
-    tenant_token = authorization.split(" ")[1]
-    try:
-        tenant_data = decode_token(tenant_token)
-    except Exception as e:
-        return {
-            "http_code": 401,
-            "code": "UNAUTHORIZED",
-            "message": f"Tenant token decode failed: {str(e)}"
-        }
+    entity = data.get("entity") or {}
+    site_name = entity.get("name")
 
-    tenant_id_str = tenant_data.get("tenant_id")
-    if not tenant_id_str:
-        return {
-            "http_code": 401,
-            "code": "UNAUTHORIZED",
-            "message": "Invalid tenant token: tenant_id missing"
-        }
+    if not site_name:
+        return HttpStatusCode.BAD_REQUEST.response("Site name is required")
 
-    try:
-        tenant_id = uuid.UUID(tenant_id_str)
-    except Exception as e:
-        return HttpStatusCode.BAD_REQUEST.response(message=f"Invalid tenant_id in token: {str(e)}")
+    rows = await FRTUSites.select(name=site_name)
+    if not rows:
+        return HttpStatusCode.NOT_FOUND.response("Site not found")
 
-    payload = await request.json()
-    if payload.get("operation") != "delete" or payload.get("target") != "site":
+    orm = rows[0]
+    row = {c.name: getattr(orm, c.name) for c in orm.__table__.columns}
+    site_id = row["id"]
+
+    device_rows = await FRTUDevices.select(site_id=site_id)
+    if device_rows:
         return HttpStatusCode.BAD_REQUEST.response(
-            message="Invalid request: operation must be 'delete' and target must be 'site'"
+            f"Cannot delete site '{site_name}'. Devices exist under this site."
         )
 
-    entity = payload.get("entity") or {}
+    await FRTUSites.delete(conditions={"id": site_id})
+
+    return HttpStatusCode.OK.response(
+        message=f"Site '{site_name}' deleted successfully",
+        data={"deleted_site_id": str(site_id)}
+    )
+
+
+async def delete_site(data: dict, requester_id: UUID):
+
+    entity = data.get("entity") or {}
+    raw_id = entity.get("id")
     site_name = entity.get("name")
-    if not site_name:
-        return HttpStatusCode.BAD_REQUEST.response(message="Site 'name' is required to delete")
 
-    try:
-        site = await FRTUSites.select(name=site_name)
-        if not site:
-            return {"http_code": 404,"code": "NOT_FOUND","message": f"Tenant does not have Site {site_name}!"}
+    if raw_id:
+        try:
+            site_id = raw_id if isinstance(raw_id, UUID) else UUID(str(raw_id))
+        except:
+            return HttpStatusCode.BAD_REQUEST.response("Invalid site ID format")
 
-        site_obj = site[0]
+        rows = await FRTUSites.select(id=site_id)
+        if not rows:
+            return HttpStatusCode.NOT_FOUND.response("Site not found")
 
-        parent_project = await FRTUProjects.select(id=site_obj.project_id, tenant_id=tenant_id)
-        if not parent_project:
-            return {"http_code": 403,"code": "FORBIDDEN","message": f"Tenant does not have access to the project of site '{site_name}'"}
+        orm = rows[0]
+        row = {c.name: getattr(orm, c.name) for c in orm.__table__.columns}
+        site_name = row.get("name", "")
 
-        devices = await FRTUDevices.select(site_id=site_obj.id)
-        if devices:
-            return {"http_code": 400,"code": "BAD_REQUEST","message": f"Site '{site_name}' has {len(devices)} device(s). Delete them first."}
+    else:
+        if not site_name:
+            return HttpStatusCode.BAD_REQUEST.response("Either site ID or site name is required")
 
-        await FRTUSites.delete(conditions={"id": site_obj.id})
+        rows = await FRTUSites.select(name=site_name)
+        if not rows:
+            return HttpStatusCode.NOT_FOUND.response("Site not found")
 
-        return {"http_code": 200,"code": "OK","message": f"Site '{site_name}' deleted successfully"}
+        orm = rows[0]
+        row = {c.name: getattr(orm, c.name) for c in orm.__table__.columns}
+        site_id = row["id"]
 
-    except Exception as e:
-        return HttpStatusCode.BAD_REQUEST.response(message=str(e))
+    device_rows = await FRTUDevices.select(site_id=site_id)
+    if device_rows:
+        return HttpStatusCode.BAD_REQUEST.response(
+            f"Cannot delete site '{site_name}'. Devices exist under this site."
+        )
 
+    await FRTUSites.delete(conditions={"id": site_id})
 
-
-# ======================= Sites CRUD with tenant id hardcoded =============================================
-
-TENANT_ID = "d4705477-cc27-4229-a0c3-04f55c3db721"
-
-# create site
-# async def create_site(request: Request, settings: Settings):
-#     payload = await request.json()
-
-#     if payload.get("operation") != "create" or payload.get("target") != "site":
-#         return HttpStatusCode.BAD_REQUEST.response(message="Invalid request: operation must be 'create' and target must be 'site'")
-
-#     entity = payload.get("entity") or {}
-#     name = entity.get("name")
-#     site_type = entity.get("type")
-#     parent_name = entity.get("parentName")
-
-#     if not name or not site_type or not parent_name:
-#         return HttpStatusCode.BAD_REQUEST.response(message="Site 'name', 'type' and 'parentName' are required fields")
-
-#     parent_project = await FRTUProjects.select(name=parent_name)
-#     if not parent_project:
-#         return HttpStatusCode.NOT_FOUND.response(message=f"Parent project '{parent_name}' not found")
-
-#     existing = await FRTUSites.select(project_id=parent_project[0].id, name=name)
-#     if existing:
-#         return HttpStatusCode.BAD_REQUEST.response(message=f"Site with name '{name}' already exists in project '{parent_name}'")
-
-#     exclude_keys = {"name", "type", "parentName"}
-#     attributes = {k: v for k, v in entity.items() if k not in exclude_keys}
-#     attributes["type"] = site_type
-
-#     now = datetime.now(UTC).replace(tzinfo=None)
-
-#     try:
-#         value = await FRTUSites.insert(
-#             project_id=parent_project[0].id,
-#             name=name,
-#             attribute=attributes,
-#             creation_time=now,
-#             last_update_time=now
-#         )
-
-#         response_data = {
-#             "id": str(value.id),
-#             "project_id": str(value.project_id),
-#             "name": value.name,
-#             "attribute": value.attribute,
-#             "creation_time": value.creation_time.isoformat() if value.creation_time else None,
-#             "last_update_time": value.last_update_time.isoformat() if value.last_update_time else None,
-#         }
-
-#         return HttpStatusCode.CREATED.response(message="FRTU Site created!", data=response_data)
-
-#     except Exception as e:
-#         return HttpStatusCode.BAD_REQUEST.response(message=str(e))
-
-# get list of projects and get project by project name
-# async def read_sites(request: Request):
-#     payload = await request.json()
-#     entity = payload.get("entity", {})
-#     site_name = entity.get("name")
-#     project_name = entity.get("projectName")  
-
-#     if payload.get("operation") != "read" or payload.get("target") != "site":
-#         return HttpStatusCode.BAD_REQUEST.response(message="Invalid operation or target")
-
-#     try:
-#         filters = {}
-        
-#         if project_name:
-#             parent_projects = await FRTUProjects.select(tenant_id=TENANT_ID, name=project_name)
-#             if not parent_projects:
-#                 return HttpStatusCode.NOT_FOUND.response(message=f"Project '{project_name}' not found", data=[])
-#             filters["project_id"] = parent_projects[0].id
-
-#         if site_name:
-#             filters["name"] = site_name
-
-#         if not filters:
-#             parent_projects = await FRTUProjects.select(tenant_id=TENANT_ID)
-#             if not parent_projects:
-#                 return HttpStatusCode.NOT_FOUND.response(message="No projects found", data=[])
-#             filters["project_id"] = [p.id for p in parent_projects]
-
-#         sites = await FRTUSites.select(**filters)
-
-#         if not sites:
-#             return HttpStatusCode.NOT_FOUND.response(
-#                 message=f"Site '{site_name}' not found" if site_name else "No sites found",
-#                 data=[]
-#             )
-
-#         response_data = []
-#         for site in sites:
-#             site_dict = dict(site)
-#             attrs = site_dict.pop("attribute", {}) or {}
-#             for k, v in attrs.items():
-#                 site_dict[k] = v
-
-#             parent_project = await FRTUProjects.select(id=site_dict.get("project_id"))
-#             site_dict["parentName"] = parent_project[0].name if parent_project else None
-#             site_dict.pop("project_id", None) 
-
-#             if site_dict.get("creation_time"):
-#                 site_dict["creation_time"] = site_dict["creation_time"].isoformat()
-#             if site_dict.get("last_update_time"):
-#                 site_dict["last_update_time"] = site_dict["last_update_time"].isoformat()
-#             if site_dict.get("id"):
-#                 site_dict["id"] = str(site_dict["id"])
-
-#             response_data.append(site_dict)
-
-#         if site_name:
-#             response_data = response_data[0]
-
-#         return HttpStatusCode.OK.response(
-#             message=f"{len(sites)} site(s) fetched",
-#             data=response_data
-#         )
-
-#     except Exception as e:
-#         return HttpStatusCode.BAD_REQUEST.response(message=str(e))
-
-# update project
-# async def update_site(request: Request):
-#     payload = await request.json()
-    
-#     if payload.get("operation") != "update" or payload.get("target") != "site":
-#         return HttpStatusCode.BAD_REQUEST.response(
-#             message="Invalid request: operation must be 'update' and target must be 'site'"
-#         )
-
-#     entity = payload.get("entity") or {}
-#     site_name = entity.get("name")
-    
-#     if not site_name:
-#         return HttpStatusCode.BAD_REQUEST.response(message="Site 'name' is required to update")
-
-#     try:
-#         site = await FRTUSites.select(name=site_name)
-#         if not site:
-#             return HttpStatusCode.NOT_FOUND.response(message=f"Site '{site_name}' not found")
-
-#         site_obj = site[0]
-#         exclude_keys = {"name", "type", "project_id"}
-#         updated_attrs = {k: v for k, v in entity.items() if k not in exclude_keys}
-
-#         existing_attrs = site_obj.attribute or {}
-#         existing_attrs.update(updated_attrs)
-
-#         now = datetime.now(UTC).replace(tzinfo=None)
-
-#         await FRTUSites.update(
-#             conditions={"name": site_name},
-#             attribute=existing_attrs,
-#             last_update_time=now
-#         )
-
-#         response_data = dict(site_obj)
-#         response_data.pop("attribute", None)
-#         response_data.update(existing_attrs)
-
-#         from src.models.frtu_projects import FRTUProjects
-#         parent_project = await FRTUProjects.select(id=site_obj.project_id)
-#         response_data["parentName"] = parent_project[0].name if parent_project else None
-#         response_data.pop("project_id", None)
-
-#         if response_data.get("creation_time"):
-#             response_data["creation_time"] = response_data["creation_time"].isoformat()
-#         if response_data.get("last_update_time"):
-#             response_data["last_update_time"] = response_data["last_update_time"].isoformat()
-#         if response_data.get("id"):
-#             response_data["id"] = str(response_data["id"])
-
-#         return HttpStatusCode.OK.response(
-#             message=f"Site '{site_name}' updated successfully",
-#             data=response_data
-#         )
-
-#     except Exception as e:
-#         return HttpStatusCode.BAD_REQUEST.response(message=str(e))
-
-# delete project
-# async def delete_site(request: Request):
-#     payload = await request.json()
-    
-#     if payload.get("operation") != "delete" or payload.get("target") != "site":
-#         return HttpStatusCode.BAD_REQUEST.response(
-#             message="Invalid request: operation must be 'delete' and target must be 'site'"
-#         )
-
-#     entity = payload.get("entity") or {}
-#     site_name = entity.get("name")
-
-#     if not site_name:
-#         return HttpStatusCode.BAD_REQUEST.response(message="Site 'name' is required to delete")
-
-#     try:
-#         site = await FRTUSites.select(name=site_name)
-#         if not site:
-#             return HttpStatusCode.NOT_FOUND.response(message=f"Site '{site_name}' not found")
-        
-#         site_id = site[0].id
-
-#         devices = await FRTUDevices.select(site_id=site_id)
-#         if devices:
-#             return HttpStatusCode.BAD_REQUEST.response(
-#                 message=f"Site '{site_name}' has {len(devices)} device(s). Delete them first."
-#             )
-#         await FRTUSites.delete(conditions={"name": site_name})
-
-#         return HttpStatusCode.OK.response(message=f"Site '{site_name}' deleted successfully")
-
-#     except Exception as e:
-#         return HttpStatusCode.BAD_REQUEST.response(message=str(e))
+    return HttpStatusCode.OK.response(
+        message=f"Site '{site_name}' deleted successfully",
+        data={"deleted_site_id": str(site_id)}
+    )
 

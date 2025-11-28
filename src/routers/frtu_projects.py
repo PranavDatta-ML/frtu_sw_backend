@@ -72,7 +72,7 @@ async def api_delete_project_by_name(data: FRTUProjectDelete,authorization: str 
     return await delete_project_by_name(data, requester_id)
 
 
-@router.post("/delete/id={project_id}")
+@router.post("/delete-by-id")
 async def api_delete_project_by_id(data: FRTUProjectDeleteByID,authorization: str = Header(...),user_id: UUID = Depends(require_permission("edit", "PROJECT"))):
     token = authorization.split(" ")[1]
     decoded = decode_access_token(token)

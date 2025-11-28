@@ -1,5 +1,5 @@
 from datetime import UTC, datetime, timezone
-import uuid
+from uuid import UUID
 from fastapi import Depends, HTTPException, Header, Request
 from sqlalchemy import select
 from src.config.auth_config import ALGORITHM, SECRET_KEY
@@ -14,6 +14,7 @@ from src.utils.access_token import decode_token
 from src.utils.schema import verify_schema
 import jwt # type: ignore
 from src import Settings, HttpStatusCode
+import uuid
 
 
 # async def create(request: Request, settings: Settings):
@@ -33,58 +34,79 @@ from src import Settings, HttpStatusCode
 
 
 # ---------------- Create Device ----------------
-async def create_device(request: Request, authorization: str = Header(...)):
-    if not authorization or not authorization.startswith("Bearer "):
-        return {"http_code": 401, "code": "UNAUTHORIZED", "message": "Invalid Authorization header"}
-    tenant_token = authorization.split(" ")[1]
-    tenant_data = decode_token(tenant_token)
-    tenant_id_str = tenant_data.get("tenant_id")
-    tenant_id = uuid.UUID(tenant_id_str)
+async def create_device(data: dict, requester_id: UUID):
 
-    payload = await request.json()
-    if payload.get("operation") != "create" or payload.get("target") != "device":
-        return {"http_code": 400, "code": "BAD_REQUEST", "message": "Invalid operation/target"}
+    entity = data.get("entity") or {}
 
-    entity = payload.get("entity") or {}
     name = entity.get("name")
-    type_str = entity.get("type")  
-    parent_site_name = entity.get("parentName")
+    if not name:
+        return HttpStatusCode.BAD_REQUEST.response("Device name is required")
 
-    if not name or not type_str or not parent_site_name:
-        return {"http_code": 400, "code": "BAD_REQUEST", "message": "Missing required fields"}
+    device_type = entity.get("type")
+    if not device_type:
+        return HttpStatusCode.BAD_REQUEST.response("Device type is required")
 
-    parent_sites = await FRTUSites.select(name=parent_site_name)
-    if not parent_sites:
-        return {"http_code": 404, "code": "NOT_FOUND", "message": f"Site '{parent_site_name}' not found"}
-    site_obj = parent_sites[0]
+    parent_name = entity.get("parentName")
+    raw_site_id = entity.get("site_id")
 
-    parent_projects = await FRTUProjects.select(id=site_obj.project_id, tenant_id=tenant_id)
-    if not parent_projects:
-        return {"http_code": 404, "code": "NOT_FOUND", "message": f"Project for site '{parent_site_name}' not found under this tenant"}
+    if raw_site_id:
+        try:
+            site_id = raw_site_id if isinstance(raw_site_id, UUID) else UUID(str(raw_site_id))
+        except:
+            return HttpStatusCode.BAD_REQUEST.response("Invalid site_id format")
+        site_rows = await FRTUSites.select(id=site_id)
+        if not site_rows:
+            return HttpStatusCode.NOT_FOUND.response("Site not found")
+        site_orm = site_rows[0]
+        site_row = {c.name: getattr(site_orm, c.name) for c in site_orm.__table__.columns}
+        site_id = site_row["id"]
+        site_name = site_row["name"]
+    else:
+        if not parent_name:
+            return HttpStatusCode.BAD_REQUEST.response("Either site_id or parentName is required")
+        site_rows = await FRTUSites.select(name=parent_name)
+        if not site_rows:
+            return HttpStatusCode.NOT_FOUND.response("Site not found")
+        site_orm = site_rows[0]
+        site_row = {c.name: getattr(site_orm, c.name) for c in site_orm.__table__.columns}
+        site_id = site_row["id"]
+        site_name = site_row["name"]
 
-    existing_devices = await FRTUDevices.select(site_id=site_obj.id, name=name)
-    if existing_devices:
-        return {"http_code": 400, "code": "BAD_REQUEST", "message": f"Device '{name}' already exists in site '{parent_site_name}'"}
+    existing = await FRTUDevices.select(name=name, site_id=site_id)
+    if existing:
+        return HttpStatusCode.BAD_REQUEST.response("Device already exists under this site")
 
-    exclude_keys = {"name", "type", "parentName"}
-    attributes = {k: v for k, v in entity.items() if k not in exclude_keys}
-    attributes["type"] = type_str  
+    attr = entity.copy()
+    attr["site_name"] = site_name
 
-    now = datetime.now().replace(tzinfo=None)
+    now = datetime.now(UTC).replace(tzinfo=None)
 
-    try:
-        new_device = await FRTUDevices.insert(
-            site_id=site_obj.id,
-            name=name,
-            type=type_str,  
-            attribute=attributes,
-            creation_time=now,
-            last_update_time=now
-        )
-        return {"http_code": 201, "code": "CREATED", "message": f"Device '{name}' created successfully!"}
+    new_device = await FRTUDevices.insert(
+        name=name,
+        type=device_type,
+        site_id=site_id,
+        attribute=attr,
+        creation_time=now,
+        last_update_time=now
+    )
 
-    except Exception as e:
-        return {"http_code": 400, "code": "BAD_REQUEST", "message": f"Failed to create device: {str(e)}"}
+    device_row = {c.name: getattr(new_device, c.name) for c in new_device.__table__.columns}
+
+    return HttpStatusCode.CREATED.response(
+        message="Device created successfully",
+        data={
+            "id": str(device_row["id"]),
+            "name": device_row["name"],
+            "type": device_row["type"],
+            "site_id": str(site_id),
+            "site_name": site_name,
+            "attribute": attr,
+            "creationTs": int(now.timestamp() * 1000),
+            "lastUpdateTs": int(now.timestamp() * 1000)
+        }
+    )
+
+
 
 
 # ---------------- Read Devices ----------------
