@@ -20,10 +20,6 @@ class FRTURoleCreate(FRTURoleBase):
     def set_last_update_time(cls, v):
         return datetime.now(UTC)
 
-class FRTURoleUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    permission_ids: Optional[List[str]] = None
 
 class FRTURoleRead(FRTURoleBase):
     id: UUID
@@ -31,3 +27,36 @@ class FRTURoleRead(FRTURoleBase):
 
     class Config:
         from_attributes = True
+
+class PermissionItem(BaseModel):
+    resource: str
+    action: list[str]
+
+
+class FRTURoleAdd(BaseModel):
+    name: str
+    permissions: list[PermissionItem]
+
+class FRTURoleReadEntity(BaseModel):
+    name: Optional[str] = None 
+
+class FRTURoleReadPayload(BaseModel):
+    entity: Optional[FRTURoleReadEntity] = None
+    page: int = 1
+    page_size: int = 10
+
+class FRTURoleUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    permissions: Optional[List[PermissionItem]] = None
+
+class FRTURoleOutPermission(BaseModel):
+    resource: str
+    action: str
+
+
+class FRTURoleOut(BaseModel):
+    id: UUID
+    name: str
+    description: Optional[str] = None
+    permissions: List[FRTURoleOutPermission]

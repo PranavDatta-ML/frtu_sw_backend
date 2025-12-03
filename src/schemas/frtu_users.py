@@ -13,6 +13,17 @@ class FRTUUserBase(BaseModel):
 class FRTUUserCreate(FRTUUserBase):
     password: str
 
+class FRTUUserAdd(BaseModel):
+    name: str
+    email: EmailStr
+    mobile_no: str = Field(..., description="Phone number")
+    role_id: UUID
+    password: Optional[str] = None
+    attribute: Optional[Dict] = None
+
+    class Config:
+        extra = "forbid"
+
 class FRTUUserUpdate(BaseModel):
     name: Optional[str] = None
     email: Optional[EmailStr] = None
@@ -34,6 +45,14 @@ class FRTUUserRead(BaseModel):
 
     class Config:
         orm_mode = True
+
+class FRTUUserUpdateById(BaseModel):
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    mobile_no: Optional[str] = None
+    attribute: Optional[dict] = None
+    role_id: Optional[UUID] = None
+    is_active: Optional[bool] = None
 
 class FRTUUserLogin(BaseModel):
     email: Optional[str] = None

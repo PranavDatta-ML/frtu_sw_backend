@@ -36,6 +36,40 @@ async def create_permission(permission_create: FRTUPermissionCreate, user_id: UU
 
     return FRTUPermissionRead.from_orm(permission)
 
+PERMISSION_ACTIONS = ["create", "view", "edit", "delete"]
+
+PERMISSION_RESOURCES = [
+    "PLATFORM_ADMIN",
+    "TENANT",
+    "PROJECT",
+    "SITES",
+    "DEVICE",
+    "TAGS",
+    "MODULE",
+    "USER",
+    "ROLES",
+    "PERMISSION",
+    "PROTOCOLS",
+    "USER_ASSIGNMENT",
+    "RESOURCE",
+]
+
+
+async def read_permission_catalog():
+    resources = [
+        {"resource": res, "actions": PERMISSION_ACTIONS}
+        for res in PERMISSION_RESOURCES
+    ]
+
+    return {
+        "http_code": 200,
+        "code": "OK",
+        "message": "Permission catalog fetched successfully",
+        "permissions": {
+            "resources": resources,
+        },
+    }
+
 
 async def list_permissions(skip: int = 0, limit: int = 100) -> List[FRTUPermissionRead]:
     # permissions = await FRTUPermissions.select().offset(skip).limit(limit)

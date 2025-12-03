@@ -1,3 +1,4 @@
+from math import ceil
 import uuid
 from fastapi import Body, HTTPException, Query, Request, status
 from datetime import datetime, timezone
@@ -11,26 +12,64 @@ from src.models.frtu_roles import FRTURoles
 from src.models.frtu_user_assignment import FRTUUserAssignment
 from src.models.frtu_users import FRTUUsers
 from src.schemas.auth import AuthBase
-from src.schemas.frtu_users import FRTUUserCreate, FRTUUserRead, FRTUUserUpdate
+from src.schemas.frtu_users import FRTUUserAdd, FRTUUserCreate, FRTUUserRead, FRTUUserUpdate, FRTUUserUpdateById
+from src.services.permissions import _user_can_view_all_roles, user_can_assign_roles
+from src.services.role import _get_role_permissions, _get_role_permissions_map
 from src.utils.jwt_tokens import create_access_token, decode_access_token
 from src.utils.schema import verify_schema
 from src.utils.security import generate_salt, hash_password
 from src import HttpStatusCode
+from datetime import UTC
+from collections import defaultdict
 
 
-async def create_user(data: FRTUUserCreate, creator_id: UUID = None):
-    # data = payload
+DEFAULT_PASSWORD = "***REMOVED-DEFAULT-PASSWORD***"
 
-    existing = await FRTUUsers.select(email=data.email)
-    if existing:
-        raise HTTPException(400, "User with this email already exists")
+async def create_user(data: FRTUUserAdd, creator_id: UUID | None = None):
+    if creator_id is not None:
+        allowed = await user_can_assign_roles(creator_id)
+        if not allowed:
+            return HttpStatusCode.ACCESS_DENIED.response(
+                "You are not allowed to create users or assign roles"
+            )
+    existing_roles = await FRTURoles.select()
+    if not existing_roles:
+        return {
+            "http_code": 400,
+            "code": "NO_ROLES_FOUND",
+            "message": "No roles exist. Please create a role first."
+        }
+    if not data.role_id:
+        return {
+            "http_code": 400,
+            "code": "ROLE_REQUIRED",
+            "message": "role_id is required to create user"
+        }
 
-    existing = await FRTUUsers.select(mobile_no=data.mobile_no)
-    if existing:
-        raise HTTPException(400, "User with this mobile number already exists")
+    role_rows = await FRTURoles.select(id=data.role_id)
+    if not role_rows:
+        return {
+            "http_code": 400,
+            "code": "INVALID_ROLE",
+            "message": "Role not found for given role_id"
+        }
+    if not data.mobile_no:
+        return {
+            "http_code": 400,
+            "code": "MOBILE_REQUIRED",
+            "message": "Mobile number is required"
+        }
+    if await FRTUUsers.select(email=data.email):
+        return HttpStatusCode.BAD_REQUEST.response("User with this email already exists")
 
+    if await FRTUUsers.select(mobile_no=data.mobile_no):
+        return HttpStatusCode.BAD_REQUEST.response("User with this mobile number already exists")
+
+    raw_password = data.password or DEFAULT_PASSWORD
     salt = generate_salt()
-    password_hash = hash_password(data.password, salt)
+    password_hash = hash_password(raw_password, salt)
+
+    now = datetime.now(UTC).replace(tzinfo=None)
 
     user = await FRTUUsers.insert(
         name=data.name,
@@ -40,378 +79,389 @@ async def create_user(data: FRTUUserCreate, creator_id: UUID = None):
         salt=salt,
         is_active=True,
         is_deleted=False,
-        attribute=data.attribute,
-        creation_time=datetime.utcnow(),
-        last_update_time=datetime.utcnow()
+        attribute=data.attribute or {},
+        creation_time=now,
+        last_update_time=now,
+    )
+
+    await FRTUUserAssignment.insert(
+        user_id=user.id,
+        role_id=data.role_id,
+        scope_type="PLATFORM",
+        scope_id=creator_id,
+        attribute={},
+        admin_id=creator_id,
+        creation_time=now,
+        last_update_time=now,
+    )
+
+    return {
+        "http_code": 201,
+        "code": "CREATED",
+        "message": "User created successfully",
+        "data": {
+            "created_by": str(creator_id) if creator_id else None,
+            "id": str(user.id),
+            "name": user.name,
+            "email": user.email,
+            "mobile_no": user.mobile_no,
+            "last_update_time": user.last_update_time,
+            "creation_time": user.creation_time,
+            "attribute": user.attribute,
+            "role_id": str(data.role_id),
+        },
+    }
+
+
+async def read_users(
+    page: int,
+    limit: int,
+    search: str | None,   # can match name or email or mobile
+):
+    users = await FRTUUsers.select(is_deleted=False)
+
+    if search:
+        s = search.lower()
+        filtered = []
+        for u in users:
+            if (
+                (u.name and s in u.name.lower())
+                or (u.email and s in u.email.lower())
+                or (u.mobile_no and s in u.mobile_no.lower())
+            ):
+                filtered.append(u)
+        users = filtered
+
+    total = len(users)
+    start = (page - 1) * limit
+    end = start + limit
+    page_users = users[start:end]
+
+    user_ids = [u.id for u in page_users]
+    assignments = await FRTUUserAssignment.select(user_id=user_ids)
+    role_ids = {a.role_id for a in assignments}
+    roles = await FRTURoles.select(id=list(role_ids)) if role_ids else []
+    roles_by_id = {r.id: r for r in roles}
+
+    perms_map = await _get_role_permissions_map(list(role_ids))
+
+    role_by_user: dict[UUID, UUID | None] = {uid: None for uid in user_ids}
+    for a in assignments:
+        if role_by_user.get(a.user_id) is None:
+            role_by_user[a.user_id] = a.role_id
+
+    result = []
+    for u in page_users:
+        rid = role_by_user.get(u.id)
+        role = roles_by_id.get(rid) if rid else None
+        perms = perms_map.get(rid, []) if rid else []
+
+        result.append(
+            {
+                "id": str(u.id),
+                "name": u.name,
+                "email": u.email,
+                "mobile_no": u.mobile_no,
+                "is_active": u.is_active,
+                "is_deleted": u.is_deleted,
+                "attribute": u.attribute or {},
+                "creation_time": u.creation_time,
+                "last_update_time": u.last_update_time,
+                "role": {
+                    "id": str(role.id),
+                    "name": role.name,
+                    "description": role.description,
+                } if role else None,
+                "permissions": perms,
+            }
+        )
+
+    return {
+        "http_code": 200,
+        "code": "OK",
+        "message": "Users fetched successfully",
+        "page": page,
+        "page_size": limit,
+        "total_records": total,
+        "total_pages": ceil(total / limit) if limit else 1,
+        "users": result,
+    }
+
+async def read_user_by_id(user_id: UUID):
+    users = await FRTUUsers.select(id=user_id, is_deleted=False)
+    if not users:
+        return HttpStatusCode.NOT_FOUND.response("User not found")
+    u = users[0]
+
+    assignments = await FRTUUserAssignment.select(user_id=user_id)
+    role_id = assignments[0].role_id if assignments else None
+
+    role = None
+    permissions: list[dict] = []
+    if role_id:
+        roles = await FRTURoles.select(id=role_id)
+        role = roles[0] if roles else None
+        permissions = await _get_role_permissions(role_id)
+
+    data = {
+        "id": str(u.id),
+        "name": u.name,
+        "email": u.email,
+        "mobile_no": u.mobile_no,
+        "is_active": u.is_active,
+        "is_deleted": u.is_deleted,
+        "attribute": u.attribute or {},
+        "creation_time": u.creation_time,
+        "last_update_time": u.last_update_time,
+        "role": {
+            "id": str(role.id),
+            "name": role.name,
+            "description": role.description,
+        } if role else None,
+        "permissions": permissions,
+    }
+
+    return {
+        "http_code": 200,
+        "code": "OK",
+        "message": "User fetched successfully",
+        "data": data,
+    }
+
+async def update_user_by_id(user_id: UUID, data: FRTUUserUpdateById, updater_id: UUID | None = None):
+    if updater_id is not None and updater_id == user_id:
+        return HttpStatusCode.ACCESS_DENIED.response(
+            "You are not allowed to update your own user details from this endpoint"
+        )
+    users = await FRTUUsers.select(id=user_id, is_deleted=False)
+    if not users:
+        return HttpStatusCode.NOT_FOUND.response("User not found")
+    u = users[0]
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    updates = {}
+
+    if data.name is not None and data.name != u.name:
+        updates["name"] = data.name
+
+    if data.email is not None and data.email != u.email:
+        existing = await FRTUUsers.select(email=data.email)
+        if existing and existing[0].id != user_id:
+            return HttpStatusCode.BAD_REQUEST.response("User with this email already exists")
+        updates["email"] = data.email
+
+    if data.mobile_no is not None and data.mobile_no != u.mobile_no:
+        existing = await FRTUUsers.select(mobile_no=data.mobile_no)
+        if existing and existing[0].id != user_id:
+            return HttpStatusCode.BAD_REQUEST.response("User with this mobile number already exists")
+        updates["mobile_no"] = data.mobile_no
+
+    if data.attribute is not None:
+        merged_attr = {**(u.attribute or {}), **data.attribute}
+        updates["attribute"] = merged_attr
+
+    if data.is_active is not None:
+        updates["is_active"] = data.is_active
+
+    if updates:
+        updates["last_update_time"] = now
+        await FRTUUsers.update(conditions={"id": user_id}, **updates)
+
+    if data.role_id is not None:
+        roles = await FRTURoles.select(id=data.role_id)
+        if not roles:
+            return HttpStatusCode.BAD_REQUEST.response("Role not found for given role_id")
+
+        assignments = await FRTUUserAssignment.select(user_id=user_id)
+        if assignments:
+            ua = assignments[0]
+            await FRTUUserAssignment.update(
+                conditions={"id": ua.id},
+                role_id=data.role_id,
+                last_update_time=now,
+            )
+        else:
+            await FRTUUserAssignment.insert(
+                user_id=user_id,
+                role_id=data.role_id,
+                scope_type="PLATFORM",
+                scope_id=updater_id,
+                attribute={},
+                admin_id=updater_id,
+                creation_time=now,
+                last_update_time=now,
+            )
+
+    updated_users = await FRTUUsers.select(id=user_id)
+    u2 = updated_users[0]
+
+    read_obj = FRTUUserRead(
+        id=u2.id,
+        name=u2.name,
+        email=u2.email,
+        mobile_no=u2.mobile_no,
+        is_active=u2.is_active,
+        is_deleted=u2.is_deleted,
+        attribute=u2.attribute or {},
+        creation_time=u2.creation_time,
+        last_update_time=u2.last_update_time,
+        created_by=updater_id,  # fill if you store creator_id on user
+    )
+
+    resp = read_obj.dict()
+    if data.role_id is not None:
+        resp["role_id"] = str(data.role_id)
+
+    return {
+        "http_code": 200,
+        "code": "OK",
+        "message": "User updated successfully",
+        "data": resp,
+    }
+
+async def delete_user(user_id: UUID, deleter_id: UUID | None = None, is_deleted: bool = False):
+    if not is_deleted:
+        return HttpStatusCode.BAD_REQUEST.response(
+            "Please confirm delete by passing is_deleted=true"
+        )
+
+    if deleter_id is not None and deleter_id == user_id:
+        return HttpStatusCode.ACCESS_DENIED.response(
+            "You are not allowed to delete your own account"
+        )
+
+    users = await FRTUUsers.select(id=user_id)
+    if not users:
+        return HttpStatusCode.NOT_FOUND.response("User not found")
+
+    u = users[0]
+    if u.is_deleted:
+        return HttpStatusCode.BAD_REQUEST.response("User is already deleted")
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+
+    await FRTUUsers.update(
+        conditions={"id": user_id},
+        is_deleted=True,
+        is_active=False,
+        last_update_time=now,
+    )
+
+    await FRTUUserAssignment.delete(conditions={"user_id": user_id})
+
+    return {
+        "http_code": 200,
+        "code": "OK",
+        "message": "User deleted successfully",
+        "data": {"id": str(user_id)},
+    }
+
+async def read_user_permissions(user_id: UUID):
+    # roles assigned to user
+    assignments = await FRTUUserAssignment.select(user_id=user_id)
+    role_ids = [a.role_id for a in assignments]
+    if not role_ids:
+        return {
+            "http_code": 200,
+            "code": "OK",
+            "message": "No roles assigned to user",
+            "data": {"user_id": str(user_id), "permissions": []},
+        }
+
+    rps = await FRTURolePermissions.select(role_id=role_ids)
+    perm_ids = [rp.permission_id for rp in rps]
+    if not perm_ids:
+        return {
+            "http_code": 200,
+            "code": "OK",
+            "message": "No permissions mapped to user roles",
+            "data": {"user_id": str(user_id), "permissions": []},
+        }
+
+    perms = await FRTUPermissions.select(id=perm_ids)
+    perms_by_id = {p.id: (p.attribute or {}) for p in perms}
+
+    merged: dict[str, set[str]] = defaultdict(set)
+    for rp in rps:
+        attr = perms_by_id.get(rp.permission_id) or {}
+        resources_list = attr.get("resources") or []
+        for item in resources_list:
+            res = item.get("resource")
+            actions = item.get("action") or []
+            if not res or not actions:
+                continue
+            for act in actions:
+                merged[res].add(act)
+
+    permissions_out = [
+        {"resource": res, "actions": sorted(list(acts))}
+        for res, acts in merged.items()
+    ]
+
+    return {
+        "http_code": 200,
+        "code": "OK",
+        "message": "User permissions fetched successfully",
+        "data": {"user_id": str(user_id), "permissions": permissions_out},
+    }
+
+async def add_user_api(data: FRTUUserCreate, creator_id: UUID | None = None):
+    if not data.role_id:
+        raise HTTPException(status_code=400, detail="Role is required. Please create a role first.")
+
+    role_rows = await FRTURoles.select(id=data.role_id)
+    if not role_rows:
+        raise HTTPException(status_code=400, detail="Invalid role_id. Role not found.")
+
+    existing = await FRTUUsers.select(email=data.email)
+    if existing:
+        raise HTTPException(status_code=400, detail="User with this email already exists")
+
+    existing = await FRTUUsers.select(mobile_no=data.mobile_no)
+    if existing:
+        raise HTTPException(status_code=400, detail="User with this mobile number already exists")
+
+    raw_password = data.password or DEFAULT_PASSWORD
+    salt = generate_salt()
+    password_hash = hash_password(raw_password, salt)
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+
+    user = await FRTUUsers.insert(
+        name=data.name,
+        email=data.email,
+        mobile_no=data.mobile_no,
+        password_hash=password_hash,
+        salt=salt,
+        is_active=True,
+        is_deleted=False,
+        attribute=data.attribute or {},
+        creation_time=now,
+        last_update_time=now,
+    )
+
+    # ---------- assign role (mandatory) ----------
+    await FRTUUserAssignment.insert(
+        user_id=user.id,
+        role_id=data.role_id,
+        scope_type="PLATFORM",
+        scope_id=None,
+        attribute={},
+        creation_time=now,
+        last_update_time=now,
+        admin_id=creator_id,
     )
 
     resp = {
-        "created_by": creator_id,
-        **user.__dict__
+        "created_by": str(creator_id) if creator_id else None,
+        "id": str(user.id),
+        "name": user.name,
+        "email": user.email,
+        "mobile_no": user.mobile_no,
+        "role_id": str(data.role_id),
     }
 
-    # await FRTUEntities.insert(
-    #     entity_id=user.id,
-    #     name=user.name,
-    #     email_id=user.email,
-    #     mobile_no=user.mobile_no,
-    #     created_by=creator_id,
-    #     creation_time=datetime.utcnow(),
-    #     last_update_time=datetime.utcnow()
-    # )
-
     return resp
-
-
-async def get_user(user_id: UUID) -> FRTUUserRead:
-    user = await FRTUUsers.select(id=user_id)
-    if not user:
-        raise HTTPException(404, "User not found")
-
-    return FRTUUserRead.from_orm(user[0])
-
-
-async def update_user(user_id: UUID, data: FRTUUserUpdate) -> FRTUUserRead:
-    user_list = await FRTUUsers.select(id=user_id)
-    if not user_list:
-        raise HTTPException(404, "User not found")
-
-    user = user_list[0]
-
-    if data.name is not None:
-        user.name = data.name
-
-    if data.email is not None:
-        user.email = data.email
-
-    if data.mobile_no is not None:
-        user.mobile_no = data.mobile_no
-
-    if data.attribute is not None:
-        user.attribute = data.attribute
-
-    user.last_update_time = datetime.utcnow()
-    await user.update()
-
-    return FRTUUserRead.from_orm(user)
-
-
-async def delete_user(user_id: UUID):
-    user_list = await FRTUUsers.select(id=user_id)
-    if not user_list:
-        raise HTTPException(404, "User not found")
-
-    user = user_list[0]
-    await user.delete()
-
-    return {"message": "User deleted successfully"}
-
-
-
-# async def get_users(request: Request):
-#     try:
-#         users = await FRTUUsers.select(columns=[
-#             FRTUUsers.id,
-#             FRTUUsers.name,
-#             FRTUUsers.email,
-#             FRTUUsers.mobile_no,
-#             FRTUUsers.attribute,
-#             FRTUUsers.creation_time,
-#             FRTUUsers.last_update_time,
-#         ])
-
-#         user_list = []
-#         for row in users:
-#             user_list.append({
-#                 "id": str(row["id"]),
-#                 "name": row["name"],
-#                 "email": row["email"],
-#                 "mobile_no": row["mobile_no"],
-#                 "attribute": row["attribute"] or {},
-#                 "creation_time": row["creation_time"].isoformat() if row["creation_time"] else None,
-#                 "last_update_time": row["last_update_time"].isoformat() if row["last_update_time"] else None
-#             })
-
-#         return HttpStatusCode.OK.response(
-#             message="Users fetched successfully",
-#             data=user_list
-#         )
-
-#     except Exception as e:
-#         return HttpStatusCode.BAD_REQUEST.response(message=str(e))
-
-
-# async def get_user_by_name(request: Request, name: str):
-#     try:
-#         users = await FRTUUsers.select(name=name, is_deleted=False)
-        
-#         if not users:
-#             return HttpStatusCode.NOT_FOUND.response(
-#                 message=f"User with name '{name}' not found"
-#             )
-        
-#         user = users[0]
-        
-#         user_data = {
-#             "id": str(user["id"]),
-#             "name": user["name"],
-#             "email": user["email"],
-#             "mobile_no": user["mobile_no"],
-#             "is_active": user.get("is_active", True),
-#             "attribute": user.get("attribute", {}),
-#             "creation_time": user["creation_time"].isoformat() if user.get("creation_time") else None,
-#             "last_update_time": user["last_update_time"].isoformat() if user.get("last_update_time") else None
-#         }
-        
-#         return HttpStatusCode.OK.response(
-#             message="User retrieved successfully",
-#             data=user_data
-#         )
-    
-#     except Exception as e:
-#         return HttpStatusCode.BAD_REQUEST.response(
-#             message=f"Failed to retrieve user: {str(e)}"
-#         )
-
-# async def update_user_by_name(request: Request, name: str, authorization: str = Header(...)):
-#     try:
-#         if not authorization or not authorization.startswith("Bearer "):
-#             return HttpStatusCode.UNAUTHORIZED.response(
-#                 message="Invalid Authorization header"
-#             )
-        
-#         token = authorization.split(" ")[1]
-#         token_payload = decode_access_token(token)
-#         current_user_id = token_payload.get("sub")
-        
-#         if not current_user_id:
-#             return HttpStatusCode.UNAUTHORIZED.response(
-#                 message="Invalid token"
-#             )
-        
-#         users = await FRTUUsers.select(name=name, is_deleted=False)
-        
-#         if not users:
-#             return HttpStatusCode.NOT_FOUND.response(
-#                 message=f"User with name '{name}' not found"
-#             )
-        
-#         user = users[0]
-#         user_id = user["id"]
-        
-#         payload = await request.json()
-        
-#         update_fields = {}
-        
-#         if "new_name" in payload:
-#             new_name = payload["new_name"]
-#             if new_name != name:
-#                 existing = await FRTUUsers.select(name=new_name, is_deleted=False)
-#                 if existing:
-#                     return HttpStatusCode.BAD_REQUEST.response(
-#                         message=f"User with name '{new_name}' already exists"
-#                     )
-#                 update_fields["name"] = new_name
-        
-#         if "email" in payload:
-#             new_email = payload["email"]
-#             if new_email != user.get("email"):
-#                 existing = await FRTUUsers.select(email=new_email, is_deleted=False)
-#                 if existing and existing[0]["id"] != user_id:
-#                     return HttpStatusCode.BAD_REQUEST.response(
-#                         message=f"Email '{new_email}' is already in use"
-#                     )
-#                 update_fields["email"] = new_email
-        
-#         if "mobile_no" in payload:
-#             new_mobile = payload["mobile_no"]
-#             if new_mobile != user.get("mobile_no"):
-#                 existing = await FRTUUsers.select(mobile_no=new_mobile, is_deleted=False)
-#                 if existing and existing[0]["id"] != user_id:
-#                     return HttpStatusCode.BAD_REQUEST.response(
-#                         message=f"Mobile number '{new_mobile}' is already in use"
-#                     )
-#                 update_fields["mobile_no"] = new_mobile
-        
-#         if "password" in payload:
-#             new_password = payload["password"]
-#             if len(new_password) < 6:
-#                 return HttpStatusCode.BAD_REQUEST.response(
-#                     message="Password must be at least 6 characters"
-#                 )
-#             new_salt = uuid.uuid4().hex
-#             update_fields["salt"] = new_salt
-#             update_fields["password_hash"] = hash_password(new_password, new_salt)
-        
-#         if "is_active" in payload:
-#             update_fields["is_active"] = payload["is_active"]
-        
-#         if "attribute" in payload:
-#             # Merge with existing attribute
-#             existing_attr = user.get("attribute", {}) or {}
-#             new_attr = payload["attribute"]
-#             merged_attr = {**existing_attr, **new_attr}
-#             update_fields["attribute"] = merged_attr
-        
-#         if not update_fields:
-#             return HttpStatusCode.BAD_REQUEST.response(
-#                 message="No fields to update"
-#             )
-        
-#         update_fields["last_update_time"] = datetime.utcnow()
-        
-#         await FRTUUsers.update(
-#             extra={},
-#             conditions={"id": user_id},
-#             **update_fields
-#         )
-        
-#         updated_users = await FRTUUsers.select(id=user_id)
-#         updated_user = updated_users[0]
-        
-#         user_data = {
-#             "id": str(updated_user["id"]),
-#             "name": updated_user["name"],
-#             "email": updated_user["email"],
-#             "mobile_no": updated_user["mobile_no"],
-#             "is_active": updated_user.get("is_active", True),
-#             "attribute": updated_user.get("attribute", {}),
-#             "creation_time": updated_user["creation_time"].isoformat() if updated_user.get("creation_time") else None,
-#             "last_update_time": updated_user["last_update_time"].isoformat() if updated_user.get("last_update_time") else None
-#         }
-        
-#         return HttpStatusCode.OK.response(message="User updated successfully",data=user_data)
-    
-#     except Exception as e:
-#         return HttpStatusCode.BAD_REQUEST.response(message=f"Failed to update user: {str(e)}")
-
-
-# async def delete_user_by_name(request: Request, name: str, authorization: str = Header(...)):
-#     try:
-#         if not authorization or not authorization.startswith("Bearer "):
-#             return HttpStatusCode.UNAUTHORIZED.response(
-#                 message="Invalid Authorization header"
-#             )
-        
-#         token = authorization.split(" ")[1]
-#         token_payload = decode_access_token(token)
-#         current_user_id = token_payload.get("sub")
-        
-#         if not current_user_id:
-#             return HttpStatusCode.UNAUTHORIZED.response(
-#                 message="Invalid token"
-#             )
-        
-#         hard_delete = request.query_params.get("hard_delete", "false").lower() == "true"
-        
-#         users = await FRTUUsers.select(name=name, is_deleted=False)
-        
-#         if not users:
-#             return HttpStatusCode.NOT_FOUND.response(
-#                 message=f"User with name '{name}' not found"
-#             )
-        
-#         user = users[0]
-#         user_id = user["id"]
-        
-#         if str(user_id) == current_user_id:
-#             return HttpStatusCode.BAD_REQUEST.response(
-#                 message="Cannot delete your own account"
-#             )
-        
-#         if hard_delete:
-#             await FRTUUsers.delete(conditions={"id": user_id})
-#             message = f"User '{name}' permanently deleted"
-#         else:
-#             await FRTUUsers.update(
-#                 extra={},
-#                 conditions={"id": user_id},
-#                 is_deleted=True,
-#                 is_active=False,
-#                 last_update_time=datetime.utcnow()
-#             )
-#             message = f"User '{name}' deactivated successfully"
-        
-#         return HttpStatusCode.OK.response(
-#             message=message,
-#             data={
-#                 "user_id": str(user_id),
-#                 "name": name,
-#                 "deletion_type": "permanent" if hard_delete else "soft"
-#             }
-#         )
-    
-#     except Exception as e:
-#         return HttpStatusCode.BAD_REQUEST.response(
-#             message=f"Failed to delete user: {str(e)}"
-#         )
-
-# async def get_user_with_roles_permissions(request: Request, name: str):
-#     try:
-        
-#         users = await FRTUUsers.select(name=name, is_deleted=False)
-        
-#         if not users:
-#             return HttpStatusCode.NOT_FOUND.response(
-#                 message=f"User with name '{name}' not found"
-#             )
-        
-#         user = users[0]
-#         user_id = user["id"]
-        
-#         assignments = await FRTUUserAssignment.select(user_id=user_id)
-        
-#         roles_data = []
-#         all_permissions = set()
-        
-#         for assignment in assignments:
-#             role_id = assignment["role_id"]
-            
-#             roles = await FRTURoles.select(id=role_id)
-#             if roles:
-#                 role = roles[0]
-                
-#                 role_perms = await FRTURolePermissions.select(role_id=role_id)
-                
-#                 role_permissions = []
-#                 for rp in role_perms:
-#                     perm = await FRTUPermissions.select(id=rp["permission_id"])
-#                     if perm:
-#                         perm_data = perm[0]
-#                         role_permissions.append({
-#                             "permission_id": str(perm_data["id"]),
-#                             "attribute": perm_data.get("attribute", [])
-#                         })
-#                         all_permissions.add(str(perm_data["id"]))
-                
-#                 roles_data.append({
-#                     "role_id": str(role["id"]),
-#                     "role_name": role["name"],
-#                     "scope_type": assignment.get("scope_type"),
-#                     "scope_id": str(assignment.get("scope_id")) if assignment.get("scope_id") else None,
-#                     "permissions": role_permissions
-#                 })
-        
-#         user_data = {
-#             "id": str(user["id"]),
-#             "name": user["name"],
-#             "email": user["email"],
-#             "mobile_no": user["mobile_no"],
-#             "is_active": user.get("is_active", True),
-#             "attribute": user.get("attribute", {}),
-#             "creation_time": user["creation_time"].isoformat() if user.get("creation_time") else None,
-#             "last_update_time": user["last_update_time"].isoformat() if user.get("last_update_time") else None,
-#             "roles": roles_data,
-#             "total_roles": len(roles_data),
-#             "total_unique_permissions": len(all_permissions)
-#         }
-        
-#         return HttpStatusCode.OK.response(message="User details retrieved successfully",data=user_data)
-    
-#     except Exception as e:
-#         return HttpStatusCode.BAD_REQUEST.response(
-#             message=f"Failed to retrieve user details: {str(e)}"
-#         )
 
 
 async def login_user(request: Request):

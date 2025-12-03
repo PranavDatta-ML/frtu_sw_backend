@@ -37,7 +37,7 @@ class FRTUDeviceCreate(BaseModel):
     entity: FRTUDeviceCreateEntity
 
 class FRTUDeviceReadEntity(BaseModel):
-    id: Optional[UUID] = None
+    device_id: Optional[UUID] = None
     name: Optional[str] = None
 
 class FRTUDeviceRead(BaseModel):

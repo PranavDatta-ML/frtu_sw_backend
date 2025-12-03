@@ -5,10 +5,11 @@ from uuid import UUID
 from src.schemas.frtu_permissions import FRTUPermissionCreate, FRTUPermissionUpdate, FRTUPermissionRead
 from src.middleware.CreatePermissionMiddleware import require_create_permission, require_permission
 from src.middleware.ReadPermissionMiddleware import require_read_permission
-from src.views.frtu_permissions import create_permission, delete_permission, get_permission, list_permissions, update_permission
+from src.views.frtu_permissions import create_permission, delete_permission, get_permission, list_permissions, read_permission_catalog, update_permission
 
 
-router = APIRouter(prefix="/permissions", tags=["permissions"])
+# router = APIRouter(prefix="/permissions", tags=["permissions"])
+router = APIRouter(prefix="/api", tags=["permissions"])
 
 @router.post("/", response_model=FRTUPermissionRead)
 async def api_create_permission(
@@ -18,6 +19,11 @@ async def api_create_permission(
 ):
     return await create_permission(permission_create, user_id)
 
+@router.get("/permissions")
+async def api_read_permission_catalog(
+    # caller_id: UUID = Depends(require_permission("view", "PERMISSION")),
+):
+    return await read_permission_catalog()
 
 @router.get("/", response_model=List[FRTUPermissionRead])
 async def api_list_permissions(
