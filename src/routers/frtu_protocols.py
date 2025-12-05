@@ -81,14 +81,14 @@ def api_delete_protocol(protocol_id: UUID, is_deleted: bool = Query(..., descrip
             "http_code": 200,
             "code": "OK",
             "message": "Protocol deleted successfully",
-            "data": None
+            "is_deleted": is_deleted
         }
     if not is_deleted:
         return {
-            "http_code": 400,
+            "http_code": 200,
             "code": "DELETE_NOT_CONFIRMED",
             "message": "Delete not confirmed. Pass is_deleted=true to proceed.",
-            "data": None
+            "is_deleted": is_deleted
         }
     raise HTTPException(status_code=404, detail="Protocol not found")
 

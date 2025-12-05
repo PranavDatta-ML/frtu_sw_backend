@@ -69,15 +69,16 @@ async def api_update_role(
 
     return await update_role(role_id=role_id, data=payload, updater_id=requester_id)
 
-@router.delete("/{role_id}")
+@router.delete("/roles/{role_id}")
 async def api_delete_role(
     role_id: UUID,
     is_deleted: bool = Query(False, description="Must be true to actually delete"),
     authorization: str = Header(...),
-    caller_id: UUID = Depends(require_permission("delete", "ROLES")),
+    caller_id: UUID = Depends(require_permission("edit", "ROLES")),
 ):
     token = authorization.split(" ")[1]
     decoded = decode_access_token(token)
     updater_id = UUID(decoded["sub"])
     return await delete_role(role_id=role_id, updater_id=updater_id, is_deleted=is_deleted)
+
 

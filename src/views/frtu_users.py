@@ -321,9 +321,12 @@ async def update_user_by_id(user_id: UUID, data: FRTUUserUpdateById, updater_id:
 
 async def delete_user(user_id: UUID, deleter_id: UUID | None = None, is_deleted: bool = False):
     if not is_deleted:
-        return HttpStatusCode.BAD_REQUEST.response(
-            "Please confirm delete by passing is_deleted=true"
-        )
+        return {
+            "http_code": 200,
+            "code": "OK",
+            "message": "Please confirm delete by passing is_deleted=true",
+            "is_deleted": is_deleted,
+        }
 
     if deleter_id is not None and deleter_id == user_id:
         return HttpStatusCode.ACCESS_DENIED.response(

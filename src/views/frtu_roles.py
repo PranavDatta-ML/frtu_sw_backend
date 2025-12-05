@@ -122,8 +122,6 @@ async def create_role(data: FRTURoleCreate, creator_id: UUID | None = None):
         }
     }
 
-
-
 # -------- list/search for current user --------
 async def read_roles(page: int, limit: int, name: str | None, user_id: UUID):
     can_view_all = await _user_can_view_all_roles(user_id)
@@ -184,8 +182,6 @@ async def read_roles(page: int, limit: int, name: str | None, user_id: UUID):
         "roles": roles_data,
     }
 
-
-
 # -------- get single role by id for current user --------
 async def read_role_by_id(role_id: UUID, user_id: UUID):
     can_view_all = await _user_can_view_all_roles(user_id)
@@ -219,7 +215,6 @@ async def read_role_by_id(role_id: UUID, user_id: UUID):
         "description": role.description,
         "permissions": perms_out,
     }
-
 
 async def update_role(role_id: UUID, data: FRTURoleUpdate, updater_id: UUID | None = None):
     if updater_id is not None:
@@ -314,28 +309,55 @@ async def update_role(role_id: UUID, data: FRTURoleUpdate, updater_id: UUID | No
         },
     }
 
-
 async def delete_role(role_id: UUID, updater_id: UUID | None = None, is_deleted: bool = False):
-    if not is_deleted:
-        return HttpStatusCode.BAD_REQUEST.response(
-            "Please confirm delete by passing is_deleted=true"
-        )
-
-    if updater_id is not None:
-        if await _user_has_role(updater_id, role_id):
-            return HttpStatusCode.ACCESS_DENIED.response(
-                "You are not allowed to delete a role assigned to yourself"
-            )
-
     roles = await FRTURoles.select(id=role_id)
     if not roles:
         return HttpStatusCode.NOT_FOUND.response("Role not found")
+    role = roles[0]
 
-    assignments = await FRTUUserAssignment.select(role_id=role_id)
-    if assignments:
-        return HttpStatusCode.BAD_REQUEST.response(
-            "Cannot delete role. Users are still assigned to this role."
+    if updater_id is not None and await _user_has_role(updater_id, role_id):
+        return HttpStatusCode.ACCESS_DENIED.response(
+            "You are not allowed to delete a role assigned to yourself"
         )
+    assignments = await FRTUUserAssignment.select(role_id=role_id)
+    has_assignments = bool(assignments)
+    if not is_deleted:
+        assigned_users: list[str] = []
+        if has_assignments:
+            user_ids = [a.user_id for a in assignments]
+            users = await FRTUUsers.select(id=user_ids)
+            assigned_users = [u.name for u in users]
+
+        return {
+            "http_code": 200,
+            "code": "ROLE_STATUS",
+            "message": (
+                "Role is assigned to users; cannot be deleted."
+                if has_assignments
+                else "Role is not assigned to any user and can be deleted."
+            ),
+            "is_deleted": False if has_assignments else True,
+            "data": {
+                "role_id": str(role_id),
+                "role_name": role.name,
+                "assigned_users": assigned_users,
+            },
+        }
+    if has_assignments:
+        user_ids = [a.user_id for a in assignments]
+        users = await FRTUUsers.select(id=user_ids)
+        assigned_users = [u.name for u in users]
+        return {
+            "http_code": 400,
+            "code": "ROLE_IN_USE",
+            "message": "You cannot delete this role because it is mapped to one or more users.",
+            "is_deleted": False,
+            "data": {
+                "role_id": str(role_id),
+                "role_name": role.name,
+                "assigned_users": assigned_users,
+            },
+        }
 
     rps = await FRTURolePermissions.select(role_id=role_id)
     perm_ids = [rp.permission_id for rp in rps]
@@ -352,5 +374,5 @@ async def delete_role(role_id: UUID, updater_id: UUID | None = None, is_deleted:
         "http_code": 200,
         "code": "OK",
         "message": "Role deleted successfully",
-        "data": {"id": str(role_id)},
+        "is_deleted": True,
     }

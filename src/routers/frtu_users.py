@@ -91,7 +91,7 @@ async def api_delete_user(
     user_id: UUID,
     is_deleted: bool = Query(False, description="Must be true to actually delete"),
     authorization: str = Header(...),
-    caller_id: UUID = Depends(require_permission("delete", "USER")),
+    caller_id: UUID = Depends(require_permission("edit", "USER")),
 ):
     token = authorization.split(" ")[1]
     decoded = decode_access_token(token)
