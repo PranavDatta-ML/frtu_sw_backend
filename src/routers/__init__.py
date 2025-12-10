@@ -14,7 +14,7 @@ from src.routers.frtu_devices import router as FRTUDeviceRouter
 from src.routers.frtu_slots import router as FRTUSlotRouter
 from src.routers.frtu_modules import router as FRTUModuleRouter
 from src.routers.frtu_module_master import router as FRTUModuleMasterRouter
-from src.routers.frtu_modules_auto_discover import router as FRTUModulesAutoDiscoverRouter
+from src.routers.frtu_auto_discover_module import router as FRTUModulesAutoDiscoverRouter
 from src.routers.frtu_modules_slot_detail import router as FRTUModulesSlotDetailRouter
 from src.routers.frtu_manual_module import router as FRTUManualModuleRouter
 from src.routers.frtu_configure_di_channel import router as FRTUChannelDIConfigureRouter

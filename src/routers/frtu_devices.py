@@ -2,7 +2,7 @@ from uuid import UUID
 from fastapi import APIRouter, Header, Request, Depends
 from src import Settings
 from src.middleware.CreatePermissionMiddleware import require_permission
-from src.schemas.frtu_devices import FRTUDeviceCreate, FRTUDeviceRead, FRTUDeviceUpdate
+from src.schemas.frtu_devices import FRTUDeviceCreate, FRTUDeviceDelete, FRTUDeviceRead, FRTUDeviceUpdate
 from src.utils.jwt_tokens import decode_access_token
 from src.views.frtu_devices import create_device, delete_device, read_device, read_device_by_id, update_device_by_id, update_device_by_name
 
@@ -107,10 +107,16 @@ async def api_update_device(
         requester_id=requester_id
     )
 
-
 @router.post("/delete")
-async def device_delete(request: Request, authorization: str = Header(..., convert_underscores=False), settings: Settings = Depends(Settings.get_settings)):
-    return await delete_device(request, authorization)
+async def api_delete_device(
+    data: FRTUDeviceDelete,
+    authorization: str = Header(...),
+    user_id: UUID = Depends(require_permission("edit", "DEVICES"))
+):
+    token = authorization.split(" ")[1]
+    decoded = decode_access_token(token)
+    requester_id = UUID(decoded["sub"])
+    return await delete_device(data=data.model_dump(), requester_id=requester_id)
 
 
 
