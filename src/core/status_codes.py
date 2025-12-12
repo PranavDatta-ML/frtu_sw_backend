@@ -16,6 +16,7 @@ class HttpStatusCode(Enum):
     ALREADY_EXISTS = (409, 'ALREADY_EXISTS', 'This entity already exists')
     GONE = (410, 'GONE', 'This entity is no longer available')
     SERVER_ERROR = (500, 'SERVER_ERROR', 'Internal server error, while processing your request')
+    SERVICE_UNAVAILABLE = (503, 'SERVICE_UNAVAILABLE', 'The server is currently unable to handle the request')
 
     def __init__(self, http_code: int, code: str, message: str):
         """

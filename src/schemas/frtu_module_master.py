@@ -1,27 +1,23 @@
-
+from datetime import datetime
+from typing import List, Optional
 from uuid import UUID
-from pydantic import BaseModel, Field, field_validator
-from typing import Optional
-from datetime import UTC, datetime
+from pydantic import BaseModel, Field
 
-class FRTUModuleMasterBase(BaseModel):
+
+class ModuleMasterItem(BaseModel):
+    id: UUID
     name: str
     attribute: Optional[dict] = None
-
-class FRTUModuleMasterCreate(FRTUModuleMasterBase):
-    @field_validator("last_update_time")
-    def set_last_update_time(cls, value: datetime):
-        return datetime.now(UTC)
-
-    @field_validator("creation_time")
-    def set_creation_time(cls, value: datetime):
-        return datetime.now(UTC)
-
-class FRTUModuleMasterRead(FRTUModuleMasterBase):
-    id: UUID
-    creation_time: Optional[datetime]
-    last_update_time: Optional[datetime]
+    creation_time: Optional[datetime] = None
+    last_update_time: Optional[datetime] = None
 
     class Config:
         orm_mode = True
         from_attributes = True
+
+
+class ModuleMasterListResponse(BaseModel):
+    status: str = Field("success")
+    code: str = Field("MODULE_MASTER_LIST")
+    message: str = Field("Module master list fetched successfully.")
+    modules: List[str]

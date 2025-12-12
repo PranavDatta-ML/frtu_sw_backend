@@ -7,10 +7,8 @@ from src.enums.FrtuDeviceType import FrtuDeviceType
 from src.models.frtu_devices import FRTUDevices
 from src.models.frtu_module_type import FRTUModuleType
 from src.models.frtu_modules import FRTUModules
-from src.models.frtu_sites import FRTUSites
 from src.models.frtu_slots import FRTUSlots
-from src.models.frtu_user_assignment import FRTUUserAssignment
-from src.schemas.frtu_auto_discover_module import AutoDiscoverBySitePayload, AutoDiscoverRequest
+from src.schemas.frtu_auto_discover_module import  AutoDiscoverRequest
 from src import HttpStatusCode, log
 from src.services.modules import _delete_all_modules_for_device, _fmt_modules, _format_slots, _get_slots_for_device, _insert_module
 from src.utils.frtu_client import frtu_client
@@ -74,8 +72,8 @@ async def auto_discover_modules(payload: AutoDiscoverRequest, user_id: UUID):
         }
 
     device = devices[0]
-    device_id = device.id
-    device_name_db = device.name
+    device_id: UUID = device.id
+    device_name_db:str = device.name
 
     if not frtu_client.health_check():
         return HttpStatusCode.SERVICE_UNAVAILABLE.response(

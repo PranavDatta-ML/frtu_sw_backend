@@ -55,7 +55,10 @@ class ModelAdmin:
             log.info(f'Insert query with attrs={str(kwargs)} extra={str(extra)}')
             result = await session.execute(query)
             await session.commit()
-            return cls(**result.fetchone()._asdict())
+            # return cls(**result.fetchone()._asdict())
+            row = result.fetchone()._asdict()
+            await session.close()   # ← IMPORTANT
+            return cls(**row)
         except Exception as e:
             await session.rollback()
             log.error(f'Failed insert query due to error={str(e)} in {cls.__class__.__name__} '

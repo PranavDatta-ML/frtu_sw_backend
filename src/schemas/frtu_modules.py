@@ -1,7 +1,7 @@
 
 from uuid import UUID
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional
+from typing import Any, Dict, List, Optional
 from datetime import UTC, datetime
 
 class FRTUModuleBase(BaseModel):
@@ -9,6 +9,24 @@ class FRTUModuleBase(BaseModel):
     name: str
     module_type: str
     description: Optional[str] = None
+    creation_time: Optional[datetime] = None
+    last_update_time: Optional[datetime] = None
+
+class AddModuleManuallyRequest(BaseModel):
+    module_id: UUID
+    module_type: str      # e.g. "DO"
+    slot_id: UUID
+
+class DeviceModuleItem(BaseModel):
+    slot_id: UUID
+    module_id: UUID
+    module_type: str      # PS / SOM / COM / DI / DO / AI ...
+
+class DeviceModulesSimpleResponse(BaseModel):
+    status: str
+    device_id: UUID
+    device_type: str
+    modules: List[DeviceModuleItem]
 
 class FRTUModuleCreate(FRTUModuleBase):
     @field_validator("last_update_time")
@@ -43,3 +61,9 @@ class AutoDiscoverResponse(BaseModel):
     totalDI: int
     totalDO: int
     modules: ModuleSummary
+
+class DeviceModuleCreate(BaseModel):
+    site_id: UUID          
+    slot_no: int           
+    module_id: UUID       
+    config: Dict[str, Any] = {}

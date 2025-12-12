@@ -1,9 +1,10 @@
 from uuid import UUID
 from fastapi import APIRouter, Header, Query, Request, Depends
+from fastapi.responses import JSONResponse
 from src import Settings
 from src.enums.FrtuDeviceType import FrtuDeviceType
 from src.middleware.CreatePermissionMiddleware import require_permission
-from src.schemas.frtu_auto_discover_module import AutoDiscoverBySitePayload, AutoDiscoverRequest
+from src.schemas.frtu_auto_discover_module import AutoDiscoverRequest
 from src.views.frtu_auto_discover_module import auto_discover_modules, auto_discover_modules_list, auto_discover_modules_msg
 
 router = APIRouter(

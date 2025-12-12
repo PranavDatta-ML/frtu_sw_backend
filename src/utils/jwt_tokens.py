@@ -7,6 +7,7 @@ import uuid
 from src.core.settings import Settings
 from src.core.status_codes import HttpStatusCode
 from fastapi import Depends, HTTPException, Header, Request, status
+from datetime import datetime, timedelta
 
 JWT_ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 def create_access_token(sub: str, extra_claims: dict | None = None) -> str:
@@ -47,6 +48,7 @@ def decode_access_token(token: str):
         raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Token validation failed: {str(e)}")
+
 
 
 async def get_current_user_id(authorization: str = Header(...)) -> str:

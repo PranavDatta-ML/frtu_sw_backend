@@ -14,7 +14,7 @@ class FRTUModules(Base, ModelAdmin):
     name = Column(String, nullable=False)
     # module_type = Column(String, nullable=False)  # e.g. DI, DO, PS, COM
     module_type = Column(UUID(as_uuid=True), ForeignKey("frtu_module_type.id"), nullable=False)
-    description = Column(String)
+    description = Column(String, nullable=True)
     attribute = Column(JSON, nullable=True)
     channel = Column(JSON, nullable=True)
     creation_time = Column(TIMESTAMP, nullable=True)
