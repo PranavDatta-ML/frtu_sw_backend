@@ -2,9 +2,9 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Header, Query, Request, Depends, status
 from src import Settings
 from src.middleware.CreatePermissionMiddleware import require_permission
-from src.schemas.frtu_modules import AddModuleManuallyRequest, DeviceModulesSimpleResponse
+from src.schemas.frtu_modules import AddModuleAutoRequest, AddModuleManuallyRequest, DeviceModulesSimpleResponse
 from src.utils.jwt_tokens import decode_access_token
-from src.views.frtu_manual_module import add_module_manually, configure_module_manually, get_device_modules_simple, get_module_list_view
+from src.views.frtu_manual_module import add_module, add_module_manually, configure_module_manually, get_device_modules_simple, get_module_list_view
 
 
 router = APIRouter(
@@ -24,6 +24,16 @@ async def api_get_module_list(authorization: str = Header(...)):
     decode_access_token(token)
 
     return await get_module_list_view()
+
+@router.post("/add_module")
+async def api_add_module_auto(
+    payload: AddModuleAutoRequest,
+    device_id: str = Query(...),
+    device_type: str = Query("FRTU"),
+    user_id: UUID = Depends(require_permission("edit", "MODULE")),
+):
+    return await add_module(device_id, device_type, payload, user_id)
+
 
 @router.post("/add_module_manually")
 async def api_add_module_manually(

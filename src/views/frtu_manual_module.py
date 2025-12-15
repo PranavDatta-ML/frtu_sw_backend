@@ -15,7 +15,7 @@ from src.models.frtu_modules import FRTUModules
 from src.models.frtu_projects import FRTUProjects
 from src.models.frtu_sites import FRTUSites
 from src.models.frtu_slots import FRTUSlots
-from src.schemas.frtu_modules import AddModuleManuallyRequest, DeviceModuleItem, DeviceModulesSimpleResponse
+from src.schemas.frtu_modules import AddModuleAutoRequest, AddModuleManuallyRequest, DeviceModuleItem, DeviceModulesSimpleResponse
 from src.utils import frtu_client
 from src.utils.access_token import decode_token
 from src.utils.config_parser import  update_version_conf
@@ -47,6 +47,133 @@ async def get_module_list_view():
             detail=f"Failed to fetch module list: {e}",
         )
     
+async def add_module(
+    device_id: str,
+    device_type: str,
+    payload: AddModuleAutoRequest,
+    user_id: UUID,
+):
+    try:
+        device_uuid = UUID(device_id)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid device_id format",
+        )
+
+    devices = await FRTUDevices.select(id=device_uuid)
+    if not devices:
+        raise HTTPException(status_code=400, detail="Invalid device_id")
+    device = devices[0]
+
+    db_type = (
+        device.type.name
+        if hasattr(device.type, "name")
+        else (device.type.value if hasattr(device.type, "value") else str(device.type))
+    )
+    if db_type.strip().upper() != device_type.strip().upper():
+        raise HTTPException(
+            status_code=400,
+            detail="Device type does not match for this device_id",
+        )
+
+    masters = await FRTUModuleMaster.select(id=payload.module_id)
+    if not masters:
+        raise HTTPException(status_code=400, detail="Invalid module_id")
+    master = masters[0]
+
+    requested_type = payload.module_type.strip().upper()
+    master_name = master.name.upper()
+
+    if requested_type == "DI":
+        if "DIGITAL INPUT" not in master_name and "DI " not in master_name and not master_name.startswith("DI"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="module_type must be DI for this module_id",
+            )
+
+    if requested_type == "DO":
+        if "DIGITAL OUTPUT" not in master_name and "DO " not in master_name and not master_name.startswith("DO"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="module_type must be DO for this module_id",
+            )
+
+    slots: List[FRTUSlots] = await FRTUSlots.select(device_id=device_uuid)
+    if not slots:
+        raise HTTPException(status_code=400, detail="No slots available for this device")
+    slot_data = [
+        {"id": s.id, "name": str(s.name)}
+        for s in slots
+    ]
+    slot_ids = [s["id"] for s in slot_data]
+
+    existing_modules: List[FRTUModules] = await FRTUModules.select(slot_id=slot_ids)
+    occupied = {m.slot_id for m in existing_modules}
+
+    free_slot = None
+    for s in sorted(slot_data, key=lambda x: int(x["name"])):
+        if s["id"] not in occupied:
+            free_slot = s
+            break
+
+    if not free_slot:
+        raise HTTPException(status_code=400, detail="No free slot available")
+
+    try:
+        slot_number = int(free_slot["name"])
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid slot name format in frtu_slots",
+        )
+
+    module_types = await FRTUModuleType.select(name=requested_type)
+    if not module_types:
+        raise HTTPException(status_code=400, detail="Invalid module_type")
+    module_type_obj = module_types[0]
+
+    try:
+        obj = await FRTUModules.insert(
+            slot_id=free_slot["id"],
+            name=master.name,
+            module_type=module_type_obj.id,
+            description=getattr(master, "description", "") or "",
+            attribute=getattr(master, "attribute", None),
+            channel=None,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save module: {e}",
+        )
+
+    try:
+        await asyncio.to_thread(
+            frtu_client.update_devids_conf,
+            slot_number,
+            requested_type,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Module saved but failed to update devids.conf: {e}",
+        )
+
+    return {
+        "status": "success",
+        "http_code": 201,
+        "message": "Module added automatically to next free slot",
+        "data": {
+            "id": str(obj.id),
+            "slot_id": str(obj.slot_id),
+            "slot_name": free_slot["name"],
+            "name": obj.name,
+            "module_type": requested_type,
+            "description": obj.description,
+        },
+    }
+
 
 # ------------------- Add Module Manually to Slot ----------------
 async def add_module_manually(
@@ -192,6 +319,7 @@ async def get_device_modules_simple(device_id: str, device_type: str) -> DeviceM
     slots: List[FRTUSlots] = await FRTUSlots.select(device_id=device_uuid)
     if not slots:
         return DeviceModulesSimpleResponse(
+            status_code=200,
             status="success",
             device_id=device_uuid,
             device_type=device_type,
@@ -202,6 +330,7 @@ async def get_device_modules_simple(device_id: str, device_type: str) -> DeviceM
     modules: List[FRTUModules] = await FRTUModules.select(slot_id=slot_ids)
     if not modules:
         return DeviceModulesSimpleResponse(
+            status_code=200,
             status="success",
             device_id=device_uuid,
             device_type=device_type,
@@ -213,30 +342,40 @@ async def get_device_modules_simple(device_id: str, device_type: str) -> DeviceM
     type_by_id = {t.id: t for t in types}
 
     items: List[DeviceModuleItem] = []
+
+    master_names = list({m.name for m in modules})
+    masters_all = await FRTUModuleMaster.select(name=master_names)
+    master_by_name = {mm.name: mm for mm in masters_all}
+
     for m in modules:
         t = type_by_id.get(m.module_type)
         type_name = t.name if t else None
         if not type_name:
             continue
-        # find module_id from master by name if you need master id, else keep m.id
-        masters = await FRTUModuleMaster.select(name=m.name)
-        master_id = masters[0].id if masters else m.id
+
+        master = master_by_name.get(m.name)
+        master_id = master.id if master else m.id
+        module_name = master.name if master else m.name
 
         items.append(
             DeviceModuleItem(
                 slot_id=m.slot_id,
                 module_id=master_id,
                 module_type=type_name,
+                module_name=module_name,
             )
         )
 
     return DeviceModulesSimpleResponse(
-        satus_code = 200,
+        status_code=200,
         status="success",
         device_id=device_uuid,
         device_type=device_type,
         modules=items,
     )
+
+
+
 # ------------------- Configure Module Manually in Slot ----------------
 import uuid
 async def configure_module_manually(
