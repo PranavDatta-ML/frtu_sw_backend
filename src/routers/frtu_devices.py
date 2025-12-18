@@ -1,5 +1,6 @@
 from uuid import UUID
 from fastapi import APIRouter, Header, Request, Depends
+from fastapi.params import Query
 from src import Settings
 from src.middleware.CreatePermissionMiddleware import require_permission
 from src.schemas.frtu_devices import FRTUDeviceCreate, FRTUDeviceDelete, FRTUDeviceRead, FRTUDeviceUpdate
@@ -66,16 +67,24 @@ async def api_read_device(
     authorization: str = Header(...),
     page: int = 1,
     limit: int = 10,
-    user_id: UUID = Depends(require_permission("view", "DEVICES"))
+    site_id: UUID | None = None,
+    user_id: UUID = Depends(require_permission("view", "DEVICES")),
 ):
     token = authorization.split(" ")[1]
     decoded = decode_access_token(token)
     requester_id = UUID(decoded["sub"])
+
+    payload = data.model_dump()
+    if site_id is not None:
+        if payload.get("entity") is None:
+            payload["entity"] = {}
+        payload["entity"]["site_id"] = str(site_id)
+
     return await read_device(
-        data=data.model_dump(),
+        data=payload,
         requester_id=requester_id,
         page=page,
-        limit=limit
+        limit=limit,
     )
 
 
@@ -111,12 +120,17 @@ async def api_update_device(
 async def api_delete_device(
     data: FRTUDeviceDelete,
     authorization: str = Header(...),
-    user_id: UUID = Depends(require_permission("edit", "DEVICES"))
+    is_deleted: bool = Query(False),
+    user_id: UUID = Depends(require_permission("edit", "DEVICES")),
 ):
     token = authorization.split(" ")[1]
     decoded = decode_access_token(token)
     requester_id = UUID(decoded["sub"])
-    return await delete_device(data=data.model_dump(), requester_id=requester_id)
+    return await delete_device(
+        data=data.model_dump(),
+        requester_id=requester_id,
+        confirm_delete=is_deleted,
+    )
 
 
 

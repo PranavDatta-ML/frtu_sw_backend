@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from typing import Any, Dict
 from uuid import UUID
 from zoneinfo import ZoneInfo
 from fastapi import Depends, HTTPException, Header, Request
@@ -422,8 +423,7 @@ async def delete_site_by_name(data: dict, requester_id: UUID):
     )
 
 
-async def delete_site(data: dict, requester_id: UUID):
-
+async def delete_site(data: Dict[str, Any], requester_id: UUID, confirm_delete: bool):
     entity = data.get("entity") or {}
     raw_id = entity.get("id")
     site_name = entity.get("name")
@@ -431,7 +431,7 @@ async def delete_site(data: dict, requester_id: UUID):
     if raw_id:
         try:
             site_id = raw_id if isinstance(raw_id, UUID) else UUID(str(raw_id))
-        except:
+        except Exception:
             return HttpStatusCode.BAD_REQUEST.response("Invalid site ID format")
 
         rows = await FRTUSites.select(id=site_id)
@@ -441,7 +441,6 @@ async def delete_site(data: dict, requester_id: UUID):
         orm = rows[0]
         row = {c.name: getattr(orm, c.name) for c in orm.__table__.columns}
         site_name = row.get("name", "")
-
     else:
         if not site_name:
             return HttpStatusCode.BAD_REQUEST.response("Either site ID or site name is required")
@@ -457,13 +456,23 @@ async def delete_site(data: dict, requester_id: UUID):
     device_rows = await FRTUDevices.select(site_id=site_id)
     if device_rows:
         return HttpStatusCode.BAD_REQUEST.response(
-            f"Cannot delete site '{site_name}'. Devices exist under this site."
+            {
+                "message": f"Cannot delete site '{site_name}'. Devices exist under this site.",
+                "action_required": "delete_devices_first",
+                "is_deleted": False,
+            }
+        )
+
+    if not confirm_delete:
+        return HttpStatusCode.OK.response(
+            message=f"Site '{site_name}' has no devices; deletion not confirmed",
+            data={"is_deleted": False},
         )
 
     await FRTUSites.delete(conditions={"id": site_id})
 
     return HttpStatusCode.OK.response(
         message=f"Site '{site_name}' deleted successfully",
-        data={"deleted_site_id": str(site_id)}
+        data={"is_deleted": True},
     )
 

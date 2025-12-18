@@ -1,5 +1,5 @@
 from uuid import UUID
-from fastapi import APIRouter, Body, Header, Request, Depends
+from fastapi import APIRouter, Body, Header, Query, Request, Depends
 from src import Settings
 from src.middleware.CreatePermissionMiddleware import require_permission
 from src.schemas.frtu_projects import FRTUProjectCreate, FRTUProjectDelete, FRTUProjectDeleteByID, FRTUProjectRead, FRTUProjectUpdateById, FRTUProjectUpdateByName
@@ -63,7 +63,7 @@ async def api_update_project_by_id(project_id: UUID,data: FRTUProjectUpdateById,
     return await update_project_by_id(project_id, data.model_dump(), requester_id)
 
 
-@router.post("/delete")
+@router.post("/delete-by-name")
 async def api_delete_project_by_name(data: FRTUProjectDelete,authorization: str = Header(...),user_id: UUID = Depends(require_permission("edit", "PROJECT"))):
     token = authorization.split(" ")[1]
     decoded = decode_access_token(token)
@@ -71,12 +71,16 @@ async def api_delete_project_by_name(data: FRTUProjectDelete,authorization: str 
 
     return await delete_project_by_name(data, requester_id)
 
-
-@router.post("/delete-by-id")
-async def api_delete_project_by_id(data: FRTUProjectDeleteByID,authorization: str = Header(...),user_id: UUID = Depends(require_permission("edit", "PROJECT"))):
+@router.post("/delete")
+async def api_delete_project_by_id(
+    data: FRTUProjectDeleteByID,
+    authorization: str = Header(...),
+    is_deleted: bool = Query(False),
+    user_id: UUID = Depends(require_permission("edit", "PROJECT")),
+):
     token = authorization.split(" ")[1]
     decoded = decode_access_token(token)
     requester_id = UUID(decoded["sub"])
-    return await delete_project_by_id(data, requester_id)
+    return await delete_project_by_id(data, requester_id, confirm_delete=is_deleted)
 
 

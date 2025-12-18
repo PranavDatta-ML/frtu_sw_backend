@@ -13,7 +13,7 @@ router = APIRouter(
 )
 
 # CREATE
-@router.post("/")
+@router.post("")
 async def api_create_tenant(
     data: FRTUTenantCreate,
     authorization: str = Header(...),

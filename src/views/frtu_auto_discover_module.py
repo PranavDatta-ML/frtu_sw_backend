@@ -10,44 +10,8 @@ from src.models.frtu_modules import FRTUModules
 from src.models.frtu_slots import FRTUSlots
 from src.schemas.frtu_auto_discover_module import  AutoDiscoverRequest
 from src import HttpStatusCode, log
-from src.services.modules import _delete_all_modules_for_device, _fmt_modules, _format_slots, _get_slots_for_device, _insert_module
+from src.services.modules import  _fmt_modules, _format_slots, _get_modules_for_device, _get_slots_for_device, _insert_module
 from src.utils.frtu_client import frtu_client
-
-
-
-# async def auto_discover_modules(payload: AutoDiscoverRequest, user_id: UUID):
-#     entity = payload.entity
-#     device_name = entity.name
-#     device_type: FrtuDeviceType = entity.type
-
-#     log.info(
-#         f"[AUTO_DISCOVER] v1 op={payload.operation} target={payload.target} "
-#         f"name={device_name} type={device_type.value} user_id={user_id}"
-#     )
-
-#     device, error = await _resolve_device_for_user(
-#         user_id=user_id,
-#         name=device_name,
-#         dev_type=device_type,
-#         site_id=None,
-#     )
-#     if error:
-#         return error
-
-#     slots = await FRTUSlots.select(device_id=device.id)
-#     slot_count = len(slots)
-
-#     return {
-#         "http_code": 200,
-#         "code": "AUTO_DISCOVERY_READY",
-#         "message": f"Auto discovery can be performed for {device_type.value} '{device.name}'.",
-#         "data": {
-#             "device_id": str(device.id),
-#             "device_name": device.name,
-#             "type": device.type,
-#             "total_slots": slot_count,
-#         },
-#     }
 
 
 async def auto_discover_modules(payload: AutoDiscoverRequest, user_id: UUID):
@@ -73,7 +37,7 @@ async def auto_discover_modules(payload: AutoDiscoverRequest, user_id: UUID):
 
     device = devices[0]
     device_id: UUID = device.id
-    device_name_db:str = device.name
+    device_name_db: str = device.name
 
     if not frtu_client.health_check():
         return HttpStatusCode.SERVICE_UNAVAILABLE.response(
@@ -103,9 +67,13 @@ async def auto_discover_modules(payload: AutoDiscoverRequest, user_id: UUID):
             f"[AUTO_DISCOVER] device '{device_name_db}' expected 11 slots, found {len(slot_by_number)}"
         )
 
-    await _delete_all_modules_for_device(device_id=device_id)
+    existing_pairs = await _get_modules_for_device(device_id=device_id)
+    existing_keys = set(existing_pairs)
 
-    if 1 in slot_by_number:
+    def should_insert(logical_slot: int, module_type_code: str) -> bool:
+        return (logical_slot, module_type_code) not in existing_keys
+
+    if 1 in slot_by_number and should_insert(1, "PS"):
         await _insert_module(
             device_id=device_id,
             slot_id=slot_by_number[1],
@@ -113,7 +81,9 @@ async def auto_discover_modules(payload: AutoDiscoverRequest, user_id: UUID):
             module_type_code="PS",
             name="Power Supply",
         )
-    if 2 in slot_by_number:
+        existing_keys.add((1, "PS"))
+
+    if 2 in slot_by_number and should_insert(2, "SOM"):
         await _insert_module(
             device_id=device_id,
             slot_id=slot_by_number[2],
@@ -121,7 +91,9 @@ async def auto_discover_modules(payload: AutoDiscoverRequest, user_id: UUID):
             module_type_code="SOM",
             name="Master Processor",
         )
-    if 3 in slot_by_number:
+        existing_keys.add((2, "SOM"))
+
+    if 3 in slot_by_number and should_insert(3, "COM"):
         await _insert_module(
             device_id=device_id,
             slot_id=slot_by_number[3],
@@ -129,6 +101,7 @@ async def auto_discover_modules(payload: AutoDiscoverRequest, user_id: UUID):
             module_type_code="COM",
             name="Communication",
         )
+        existing_keys.add((3, "COM"))
 
     di_slots: List[int] = []
     do_slots: List[int] = []
@@ -144,7 +117,7 @@ async def auto_discover_modules(payload: AutoDiscoverRequest, user_id: UUID):
         if not slot_id:
             continue
 
-        if type_flag == 1:
+        if type_flag == 1 and should_insert(logical_slot, "DI"):
             di_slots.append(logical_slot)
             await _insert_module(
                 device_id=device_id,
@@ -153,7 +126,8 @@ async def auto_discover_modules(payload: AutoDiscoverRequest, user_id: UUID):
                 module_type_code="DI",
                 name="Digital Input",
             )
-        elif type_flag == 2:
+            existing_keys.add((logical_slot, "DI"))
+        elif type_flag == 2 and should_insert(logical_slot, "DO"):
             do_slots.append(logical_slot)
             await _insert_module(
                 device_id=device_id,
@@ -162,6 +136,7 @@ async def auto_discover_modules(payload: AutoDiscoverRequest, user_id: UUID):
                 module_type_code="DO",
                 name="Digital Output",
             )
+            existing_keys.add((logical_slot, "DO"))
 
     return {
         "http_code": 200,
@@ -173,6 +148,130 @@ async def auto_discover_modules(payload: AutoDiscoverRequest, user_id: UUID):
             "type": device_type.value,
         },
     }
+
+# async def auto_discover_modules(payload: AutoDiscoverRequest, user_id: UUID):
+#     entity = payload.entity
+#     device_name = entity.name.strip()
+#     device_type: FrtuDeviceType = entity.type
+
+#     log.info(
+#         f"[AUTO_DISCOVER] op={payload.operation} target={payload.target} "
+#         f"name={device_name} type={device_type.value} user_id={user_id}"
+#     )
+
+#     devices = await FRTUDevices.select(name=device_name, type=device_type.value)
+#     if not devices:
+#         return {
+#             "http_code": 404,
+#             "code": "DEVICE_NOT_FOUND",
+#             "message": (
+#                 f"No device found with name '{device_name}' and type "
+#                 f"'{device_type.value}'."
+#             ),
+#         }
+
+#     device = devices[0]
+#     device_id: UUID = device.id
+#     device_name_db:str = device.name
+
+#     if not frtu_client.health_check():
+#         return HttpStatusCode.SERVICE_UNAVAILABLE.response(
+#             f"FRTU device '{device_name_db}' is not reachable."
+#         )
+
+#     try:
+#         devids = frtu_client.parse_devids_conf()
+#     except FileNotFoundError as e:
+#         log.error(f"devids.conf not found on FRTU: {e}")
+#         return {
+#             "http_code": 404,
+#             "code": "DEVIDS_NOT_FOUND",
+#             "message": f"devids.conf not found on FRTU device '{device_name_db}'.",
+#         }
+#     except Exception as e:
+#         log.error(f"Failed to parse devids.conf on FRTU: {e}")
+#         return {
+#             "http_code": 500,
+#             "code": "DEVIDS_PARSE_ERROR",
+#             "message": "Failed to read module information from FRTU.",
+#         }
+
+#     slot_by_number = await _get_slots_for_device(device_id=device_id)
+#     if len(slot_by_number) != 11:
+#         log.warning(
+#             f"[AUTO_DISCOVER] device '{device_name_db}' expected 11 slots, found {len(slot_by_number)}"
+#         )
+
+#     await _delete_all_modules_for_device(device_id=device_id)
+
+#     if 1 in slot_by_number:
+#         await _insert_module(
+#             device_id=device_id,
+#             slot_id=slot_by_number[1],
+#             logical_slot=1,
+#             module_type_code="PS",
+#             name="Power Supply",
+#         )
+#     if 2 in slot_by_number:
+#         await _insert_module(
+#             device_id=device_id,
+#             slot_id=slot_by_number[2],
+#             logical_slot=2,
+#             module_type_code="SOM",
+#             name="Master Processor",
+#         )
+#     if 3 in slot_by_number:
+#         await _insert_module(
+#             device_id=device_id,
+#             slot_id=slot_by_number[3],
+#             logical_slot=3,
+#             module_type_code="COM",
+#             name="Communication",
+#         )
+
+#     di_slots: List[int] = []
+#     do_slots: List[int] = []
+
+#     for m in devids:
+#         slot_no = int(m.get("slot_no", 0))
+#         type_flag = int(m.get("type_flag", 0))
+#         if not (1 <= slot_no <= 8):
+#             continue
+
+#         logical_slot = slot_no + 3
+#         slot_id = slot_by_number.get(logical_slot)
+#         if not slot_id:
+#             continue
+
+#         if type_flag == 1:
+#             di_slots.append(logical_slot)
+#             await _insert_module(
+#                 device_id=device_id,
+#                 slot_id=slot_id,
+#                 logical_slot=logical_slot,
+#                 module_type_code="DI",
+#                 name="Digital Input",
+#             )
+#         elif type_flag == 2:
+#             do_slots.append(logical_slot)
+#             await _insert_module(
+#                 device_id=device_id,
+#                 slot_id=slot_id,
+#                 logical_slot=logical_slot,
+#                 module_type_code="DO",
+#                 name="Digital Output",
+#             )
+
+#     return {
+#         "http_code": 200,
+#         "code": "AUTO_DISCOVERY_READY",
+#         "message": f"Auto discovery stored modules for {device_type.value} '{device_name_db}'.",
+#         "data": {
+#             "device_id": str(device_id),
+#             "device_name": device_name_db,
+#             "type": device_type.value,
+#         },
+#     }
 
 
 # async def auto_discover_modules_by_site(payload: AutoDiscoverBySitePayload, user_id: UUID):

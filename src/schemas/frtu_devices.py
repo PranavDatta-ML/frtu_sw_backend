@@ -31,14 +31,10 @@ class FRTUDeviceCreate(BaseModel):
     target: str
     entity: FRTUDeviceCreateEntity
 
-class FRTUDeviceCreate(BaseModel):
-    operation: str
-    target: str
-    entity: FRTUDeviceCreateEntity
-
 class FRTUDeviceReadEntity(BaseModel):
     device_id: Optional[UUID] = None
     name: Optional[str] = None
+    site_id: Optional[UUID] = None
 
 class FRTUDeviceRead(BaseModel):
     operation: str

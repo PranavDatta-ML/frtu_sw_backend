@@ -1,5 +1,6 @@
 from uuid import UUID
 from fastapi import APIRouter, Header, Request, Depends
+from fastapi.params import Query
 from src import Settings
 from src.middleware.CreatePermissionMiddleware import require_permission
 from src.schemas.frtu_sites import FRTUSiteCreate, FRTUSiteRead, FRTUSiteUpdate
@@ -122,10 +123,15 @@ async def api_delete_site(
 async def api_delete_site(
     data: FRTUSiteRead,
     authorization: str = Header(...),
-    user_id: UUID = Depends(require_permission("edit", "SITES"))
+    is_deleted: bool = Query(False),
+    user_id: UUID = Depends(require_permission("edit", "SITES")),
 ):
     token = authorization.split(" ")[1]
     decoded = decode_access_token(token)
     requester_id = UUID(decoded["sub"])
-    return await delete_site(data=data.model_dump(), requester_id=requester_id)
+    return await delete_site(
+        data=data.model_dump(),
+        requester_id=requester_id,
+        confirm_delete=is_deleted,
+    )
 

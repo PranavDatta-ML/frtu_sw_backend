@@ -1,7 +1,7 @@
 import asyncio
 import os
 import subprocess
-from typing import List
+from typing import Any, Dict, List
 from fastapi import HTTPException, Query, Request, Header, Depends, status
 from datetime import datetime, timezone
 from uuid import UUID
@@ -15,7 +15,8 @@ from src.models.frtu_modules import FRTUModules
 from src.models.frtu_projects import FRTUProjects
 from src.models.frtu_sites import FRTUSites
 from src.models.frtu_slots import FRTUSlots
-from src.schemas.frtu_modules import AddModuleAutoRequest, AddModuleManuallyRequest, DeviceModuleItem, DeviceModulesSimpleResponse
+from src.schemas.frtu_manual_module import ConfigureModuleManuallyRequest, GetConfiguredModuleResponse
+from src.schemas.frtu_modules import AddModuleAutoRequest, AddModuleManuallyRequest, DeviceModuleItem, DeviceModulesResponse
 from src.utils import frtu_client
 from src.utils.access_token import decode_token
 from src.utils.config_parser import  update_version_conf
@@ -174,7 +175,6 @@ async def add_module(
         },
     }
 
-
 # ------------------- Add Module Manually to Slot ----------------
 async def add_module_manually(
     device_id: str,
@@ -296,8 +296,12 @@ async def add_module_manually(
         },
     }
 
-
-async def get_device_modules_simple(device_id: str, device_type: str) -> DeviceModulesSimpleResponse:
+# ----------------- get modules list using payload module_id and module_type --------------
+async def get_device_modules(
+    device_id: str,
+    device_type: str,
+    is_auto: bool | None,
+) -> DeviceModulesResponse:
     try:
         device_uuid = UUID(device_id)
     except Exception:
@@ -314,38 +318,65 @@ async def get_device_modules_simple(device_id: str, device_type: str) -> DeviceM
         else (device.type.value if hasattr(device.type, "value") else str(device.type))
     )
     if db_type.strip().upper() != device_type.strip().upper():
-        raise HTTPException(status_code=400, detail="Device type does not match for this device_id")
+        raise HTTPException(
+            status_code=400,
+            detail="Device type does not match for this device_id",
+        )
 
     slots: List[FRTUSlots] = await FRTUSlots.select(device_id=device_uuid)
     if not slots:
-        return DeviceModulesSimpleResponse(
-            status_code=200,
+        return DeviceModulesResponse(
             status="success",
             device_id=device_uuid,
             device_type=device_type,
+            is_auto=is_auto,
             modules=[],
         )
 
     slot_ids = [s.id for s in slots]
     modules: List[FRTUModules] = await FRTUModules.select(slot_id=slot_ids)
     if not modules:
-        return DeviceModulesSimpleResponse(
-            status_code=200,
+        return DeviceModulesResponse(
             status="success",
             device_id=device_uuid,
             device_type=device_type,
+            is_auto=is_auto,
             modules=[],
         )
+
+    if is_auto is not None:
+        filtered: List[FRTUModules] = []
+        for m in modules:
+            attr = m.attribute or {}
+            flag = attr.get("is_auto")
+            if bool(flag) != is_auto:
+                filtered.append(m)
+            if bool(flag) == is_auto:
+                filtered.append(m)
+            if bool(flag) == None:
+                filtered.append(m)
+        modules = filtered
+        if not modules:
+            return DeviceModulesResponse(
+                status="success",
+                device_id=device_uuid,
+                device_type=device_type,
+                is_auto=is_auto,
+                modules=[],
+            )
 
     module_type_ids = [m.module_type for m in modules]
     types = await FRTUModuleType.select(id=module_type_ids) if module_type_ids else []
     type_by_id = {t.id: t for t in types}
 
-    items: List[DeviceModuleItem] = []
+    masters = await FRTUModuleMaster.select()
+    master_by_name = {mm.name.strip().upper(): mm for mm in masters}
+    di_master = master_by_name.get("DIGITAL INPUT")
+    do_master = master_by_name.get("DIGITAL OUTPUT")
 
-    master_names = list({m.name for m in modules})
-    masters_all = await FRTUModuleMaster.select(name=master_names)
-    master_by_name = {mm.name: mm for mm in masters_all}
+    flat_modules: List[Dict[str, Any]] = []
+    di_raw: List[FRTUModules] = []
+    do_raw: List[FRTUModules] = []
 
     for m in modules:
         t = type_by_id.get(m.module_type)
@@ -353,214 +384,215 @@ async def get_device_modules_simple(device_id: str, device_type: str) -> DeviceM
         if not type_name:
             continue
 
-        master = master_by_name.get(m.name)
-        master_id = master.id if master else m.id
-        module_name = master.name if master else m.name
+        upper_type = type_name.strip().upper()
+        module_name = m.name
 
-        items.append(
-            DeviceModuleItem(
-                slot_id=m.slot_id,
-                module_id=master_id,
-                module_type=type_name,
-                module_name=module_name,
+        if upper_type in ["PS", "SOM", "COM"]:
+            flat_modules.append(
+                {
+                    "slot_id": str(m.slot_id),
+                    "module_id": str(m.id),  # frtu_modules.id
+                    "module_type": upper_type,
+                    "module_name": module_name,
+                }
             )
+        elif upper_type == "DI":
+            di_raw.append(m)
+        elif upper_type == "DO":
+            do_raw.append(m)
+
+    modules_list: List[Dict[str, Any]] = []
+    modules_list.extend(flat_modules)
+
+    if di_raw:
+        modules_list.append(
+            {
+                "module_name": "Digital Input",
+                "module_type": "DI",
+                "module_id": str(di_master.id) if di_master else "",
+                "di_modules": [
+                    {
+                        "slot_id": str(m.slot_id),
+                        "di_module_id": str(m.id),  # frtu_modules.id
+                        "module_name": m.name,
+                    }
+                    for m in di_raw
+                ],
+            }
         )
 
-    return DeviceModulesSimpleResponse(
-        status_code=200,
+    if do_raw:
+        modules_list.append(
+            {
+                "module_name": "Digital Output",
+                "module_type": "DO",
+                "module_id": str(do_master.id) if do_master else "",
+                "do_modules": [
+                    {
+                        "slot_id": str(m.slot_id),
+                        "do_module_id": str(m.id),  # frtu_modules.id
+                        "module_name": m.name,
+                    }
+                    for m in do_raw
+                ],
+            }
+        )
+
+    return DeviceModulesResponse(
         status="success",
         device_id=device_uuid,
         device_type=device_type,
-        modules=items,
+        is_auto=is_auto,
+        modules=modules_list,
     )
 
-
-
 # ------------------- Configure Module Manually in Slot ----------------
-import uuid
+FIXED_MASTER_SLOTS = {
+    "PS": {"slot_number": 1, "card_type": "Power Supply"},
+    "SOM": {"slot_number": 2, "card_type": "Master Processor"},
+}
 async def configure_module_manually(
-    request: Request,
-    frtu_name: str = Query(...),
-    frtu_type: str = Query(...),
-    authorization: str = Header(...),
-    settings: Settings = Depends(Settings.get_settings)
+    device_id: str,
+    device_type: str,
+    payload: ConfigureModuleManuallyRequest,
+    user_id: UUID,
 ):
+    requested_type = payload.module_type.strip().upper()
+    if requested_type not in ("PS", "SOM"):
+        raise HTTPException(status_code=400, detail="Only PS and SOM supported")
+
+    if not payload.slot_info and not payload.category_info:
+        raise HTTPException(status_code=400, detail="Either slot_info or category_info must be provided")
+
     try:
-        if not authorization or not authorization.startswith("Bearer "):
-            return JSONResponse(status_code=401, content={"status": "error", "message": "Invalid Authorization header"})
+        device_uuid = UUID(device_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid device_id format")
 
-        tenant_token = authorization.split(" ")[1]
-        try:
-            tenant_data = decode_token(tenant_token)
-        except Exception as e:
-            return JSONResponse(status_code=401, content={"status": "error", "message": f"Tenant token decode failed: {str(e)}"})
+    devices = await FRTUDevices.select(id=device_uuid)
+    if not devices:
+        raise HTTPException(status_code=400, detail="Invalid device_id")
+    device = devices[0]
+    db_type = getattr(device.type, "name", str(device.type))
+    if db_type.strip().upper() != device_type.strip().upper():
+        raise HTTPException(status_code=400, detail="Device type does not match for this device_id")
 
-        tenant_id_str = tenant_data.get("tenant_id")
-        if not tenant_id_str:
-            return JSONResponse(status_code=401, content={"status": "error", "message": "Invalid tenant token: tenant_id missing"})
+    modules = await FRTUModules.select(id=payload.module_id)
+    if not modules:
+        raise HTTPException(status_code=400, detail="Invalid module_id")
+    module = modules[0]
 
-        try:
-            tenant_id = uuid.UUID(tenant_id_str)
-        except Exception as e:
-            return JSONResponse(status_code=400, content={"status": "error", "message": f"Invalid tenant_id in token: {str(e)}"})
+    module_id_value = module.id
+    module_slot_id = module.slot_id
+    module_name_value = module.name
+    module_attr = module.attribute or {}
 
-        payload = await request.json()
-        module_name = payload.get("module_name")
-        module_type = payload.get("module_type")
-        # module_id = payload.get("module_id")
-        slot_info = payload.get("slot_info", {})
-        category_info = payload.get("category_info", {})
+    slots = await FRTUSlots.select(device_id=device_uuid, id=module_slot_id)
+    if not slots:
+        raise HTTPException(status_code=400, detail="Given module does not belong to this device")
+    slot = slots[0]
+    slot_name_value = str(slot.name)
+    try:
+        actual_slot_no = int(slot_name_value)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid slot name format in frtu_slots")
 
-        if not module_name or not module_type or not slot_info:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "module_name, module_type, and slot_info are required"})
+    fixed = FIXED_MASTER_SLOTS[requested_type]
+    required_slot = fixed["slot_number"]
+    if actual_slot_no != required_slot:
+        raise HTTPException(status_code=400, detail=f"{fixed['card_type']} must be in slot {required_slot}")
+    card_type = fixed["card_type"]
 
-        slot_number = slot_info.get("slot_number")
-        if not slot_number:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "slot_number is required in slot_info"})
+    if payload.category_info and "slot_info" not in module_attr and not payload.slot_info:
+        raise HTTPException(status_code=400, detail="Configure slot_info first, then category_info")
 
-        try:
-            slot_number = int(slot_number)
-        except ValueError:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "slot_number must be an integer"})
+    attr: Dict[str, Any] = dict(module_attr)
 
-        if slot_number < 4 or slot_number > 11:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Can only configure modules in slots 4-11"})
+    if payload.slot_info is not None:
+        slot_info = dict(attr.get("slot_info") or {})
+        slot_info.update(dict(payload.slot_info))
+        slot_info["slot_number"] = actual_slot_no
+        slot_info["slot_id"] = str(module_slot_id)
+        slot_info["card_type"] = card_type
+        slot_info["module_name"] = module_name_value
+        attr["slot_info"] = slot_info
 
-        if module_type not in ["DI", "DO"]:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "module_type must be 'DI' or 'DO'"})
+    if payload.category_info is not None:
+        if "slot_info" not in attr:
+            raise HTTPException(status_code=400, detail="Configure slot_info first for this module")
+        category_info = dict(attr.get("category_info") or {})
+        category_info.update(dict(payload.category_info))
+        attr["category_info"] = category_info
 
-        type_name_map = {
-            "DO": "Digital Output",
-            "DI": "Digital Input"
-        }
-        
-        expected_name = type_name_map.get(module_type)
-        if module_name != expected_name:
-            return JSONResponse(status_code=400, content={"status": "error", "message": f"module_name must be '{expected_name}' for type '{module_type}'"})
+    await FRTUModules.update(
+        # row_id=module_id_value,  # use the parameter your Base.update uses as filter
+        conditions={"id": module_id_value},
+        attribute=attr,
+    )
 
-        projects = await FRTUProjects.select(tenant_id=tenant_id)
-        if not projects:
-            return JSONResponse(status_code=404, content={"status": "error", "message": "No projects found for this tenant"})
+    return {
+        "status": "success",
+        "http_code": 200,
+        "message": "Module configured manually",
+        "data": {
+            "module_row_id": str(module_id_value),
+            "module_type": requested_type,
+            "slot_number": actual_slot_no,
+            "card_type": card_type,
+            "attribute": attr,
+        },
+    }
 
-        project_ids = [p.id for p in projects]
-        sites = await FRTUSites.select(project_id=project_ids)
-        if not sites:
-            return JSONResponse(status_code=404, content={"status": "error", "message": "No sites found under tenant projects"})
 
-        site_ids = [s.id for s in sites]
-        devices = await FRTUDevices.select(name=frtu_name, type=frtu_type, site_id=site_ids)
-        if not devices:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Device '{frtu_name}' of type '{frtu_type}' not found for tenant"})
+# -------------------------------- get manually configured module list view ------------------
+# view
+async def get_configured_module(
+    device_id: str,
+    device_type: str,
+    module_id: UUID,
+) -> GetConfiguredModuleResponse:
+    try:
+        device_uuid = UUID(device_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid device_id format")
 
-        device = devices[0]
-        slots = await FRTUSlots.select(device_id=device.id)
-        if not slots or slot_number > len(slots):
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Slot {slot_number} not found for device '{frtu_name}'"})
+    devices = await FRTUDevices.select(id=device_uuid)
+    if not devices:
+        raise HTTPException(status_code=400, detail="Invalid device_id")
+    device = devices[0]
+    db_type = getattr(device.type, "name", str(device.type))
+    if db_type.strip().upper() != device_type.strip().upper():
+        raise HTTPException(status_code=400, detail="Device type does not match for this device_id")
 
-        slot = slots[slot_number - 1]
-        
-        existing_modules = await FRTUModules.select(slot_id=slot.id)
-        if not existing_modules:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"No module found in slot {slot_number}. Please add module first."})
+    modules = await FRTUModules.select(id=module_id)
+    if not modules:
+        raise HTTPException(status_code=400, detail="Invalid module_id")
+    module = modules[0]
 
-        module = existing_modules[0]
-        current_attr = module.get("attribute", {}) or {}
-        current_module_type = current_attr.get("module_type")
+    if not module.slot_id:
+        raise HTTPException(status_code=400, detail="Module not placed in any slot")
 
-        if current_module_type != module_type:
-            return JSONResponse(status_code=400, content={"status": "error", "message": f"Module type mismatch: slot {slot_number} has '{current_module_type}', but you provided '{module_type}'"})
+    slots = await FRTUSlots.select(device_id=device_uuid, id=module.slot_id)
+    if not slots:
+        raise HTTPException(status_code=400, detail="Module does not belong to this device")
 
-        updated_attr = current_attr.copy()
+    attr = module.attribute or {}
+    slot_info = attr.get("slot_info") or {}
+    category_info = attr.get("category_info") or {}
 
-        # if module_id:
-            # updated_attr["module_id"] = module_id
+    mtypes = await FRTUModuleType.select(id=module.module_type)
+    module_type_name = mtypes[0].name if mtypes else ""
 
-        # updated_attr["module_name"] = current_attr.get("module_name", f"{slot.name}_{module_id or 'module'}")
-        updated_attr["module_type"] = module_type
-        updated_attr["slotnumber"] = slot_number
-
-        if slot_info:
-            current_slot_info = updated_attr.get("slot_info", {})
-            updated_attr["slot_info"] = {**current_slot_info, **slot_info}
-
-        if category_info:
-            current_category_info = updated_attr.get("category_info", {})
-            
-            if module_type == "DI":
-                total_channels = 16
-                channel_prefix = "DI"
-            else:
-                total_channels = 10
-                channel_prefix = "DO"
-            
-            if f"no_of_{module_type}_channel" not in current_category_info:
-                current_category_info[f"total_no_of_{module_type}_channel"] = total_channels
-                current_category_info["type"] = f"{total_channels} channel"
-                current_category_info[f"no_of_{module_type}_channel"] = [
-                    f"{channel_prefix}_{i}" for i in range(1, total_channels + 1)
-                ]
-            
-            updated_attr["category_info"] = {**current_category_info, **category_info}
-
-        naive_utc_now = datetime.utcnow()
-
-        await FRTUModules.update(
-            extra={},
-            conditions={"id": module["id"]},
-            attribute=updated_attr,
-            last_update_time=naive_utc_now
-        )
-
-        version_conf_synced = False
-        version_conf_updates = {}
-        
-        if category_info and slot_number > 3:
-            if "serial_number" in category_info:
-                version_conf_updates["serial_number"] = category_info["serial_number"]
-            if "hardware_version" in category_info:
-                version_conf_updates["hardware_version"] = category_info["hardware_version"]
-            if "software_version" in category_info:
-                version_conf_updates["software_version"] = category_info["software_version"]
-            
-            if version_conf_updates:
-                try:
-                    update_version_conf(
-                        slot_number=slot_number,
-                        serial_number=version_conf_updates.get("serial_number"),
-                        hardware_version=version_conf_updates.get("hardware_version"),
-                        software_version=version_conf_updates.get("software_version")
-                    )
-                    version_conf_synced = True
-                except Exception as e:
-                    return JSONResponse(
-                        status_code=500,
-                        content={
-                            "status": "warning",
-                            "message": f"Module configured in DB but failed to update version.conf: {str(e)}",
-                            "updated_data": updated_attr
-                        }
-                    )
-
-        response_data = {
-            "status": "success",
-            "message": f"Module in slot {slot_number} configured successfully",
-            # "module_details": {
-            #     "module_id": str(module["id"]),
-            #     "module_name": updated_attr.get("module_name"),
-            #     "module_type": module_type,
-            #     "slot_number": slot_number,
-            #     "attribute": updated_attr
-            # }
-        }
-        
-        # if version_conf_synced:
-        #     response_data["version_conf_synced"] = True
-        #     response_data["version_conf_updates"] = version_conf_updates
-
-        return JSONResponse(status_code=200, content=response_data)
-
-    except Exception as e:
-        return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
+    return GetConfiguredModuleResponse(
+        status="success",
+        http_code=200,
+        message="Module configured manually",
+        module_id=module.id,
+        module_type=module_type_name,
+        device_id=device_uuid,
+        slot_info=slot_info or None,
+        category_info=category_info or None,
+    )
 
 
 

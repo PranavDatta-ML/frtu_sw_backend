@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Tuple
 from uuid import UUID
 from src.models.frtu_module_type import FRTUModuleType
 from src.models.frtu_modules import FRTUModules
@@ -7,7 +7,7 @@ from src import log
 
 # auto discover helper functions can be added here for auto discover_modules  api
 MODULE_TYPE_CACHE: dict[str, UUID] = {}
-
+MODULE_TYPE_REVERSE_CACHE: dict[UUID, str] = {}
 
 async def _get_module_type_id(code: str) -> UUID | None:
     code = code.upper()
@@ -19,6 +19,7 @@ async def _get_module_type_id(code: str) -> UUID | None:
         return None
     mt = rows[0]
     MODULE_TYPE_CACHE[code] = mt.id
+    MODULE_TYPE_REVERSE_CACHE[mt.id] = code
     return mt.id
 
 
@@ -34,14 +35,42 @@ async def _get_slots_for_device(device_id: UUID) -> dict[int, UUID]:
             by_no[sn] = s.id
     return by_no
 
+async def _get_module_type_code(module_type_id: UUID) -> str | None:
+    if module_type_id in MODULE_TYPE_REVERSE_CACHE:
+        return MODULE_TYPE_REVERSE_CACHE[module_type_id]
+    rows = await FRTUModuleType.select(id=module_type_id)
+    if not rows:
+        return None
+    mt = rows[0]
+    code = mt.name.upper()
+    MODULE_TYPE_REVERSE_CACHE[module_type_id] = code
+    MODULE_TYPE_CACHE[code] = mt.id
+    return code
 
-async def _delete_all_modules_for_device(device_id: UUID):
+async def _get_modules_for_device(device_id: UUID) -> List[Tuple[int, str]]:
     dev_id_str = str(device_id)
     mods = await FRTUModules.select()
+    result: List[Tuple[int, str]] = []
     for m in mods:
         attr = m.attribute or {}
-        if attr.get("device_id") == dev_id_str:
-            await FRTUModules.delete(m.id)
+        if attr.get("device_id") != dev_id_str:
+            continue
+        logical_slot = int(attr.get("slot_number", 0))
+        if logical_slot <= 0:
+            continue
+        code = await _get_module_type_code(m.module_type)
+        if not code:
+            continue
+        result.append((logical_slot, code))
+    return result
+
+# async def _delete_all_modules_for_device(device_id: UUID):
+#     dev_id_str = str(device_id)
+#     mods = await FRTUModules.select()
+#     for m in mods:
+#         attr = m.attribute or {}
+#         if attr.get("device_id") == dev_id_str:
+#             await FRTUModules.delete(m.id)
 
 
 async def _insert_module(
@@ -50,6 +79,7 @@ async def _insert_module(
     logical_slot: int,
     module_type_code: str,
     name: str,
+    is_auto: bool = True,
 ):
     module_type_id = await _get_module_type_id(module_type_code)
     if not module_type_id:
@@ -57,6 +87,7 @@ async def _insert_module(
     attr = {
         "device_id": str(device_id),
         "slot_number": logical_slot,
+        "is_auto": is_auto,
     }
     await FRTUModules.insert(
         slot_id=slot_id,

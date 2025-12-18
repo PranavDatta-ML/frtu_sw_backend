@@ -27,11 +27,32 @@ class DeviceModuleItem(BaseModel):
     module_type: str      # PS / SOM / COM / DI / DO / AI ...
     module_name: str
 
-class DeviceModulesSimpleResponse(BaseModel):
+class DeviceModulesResponse(BaseModel):
     status: str
     device_id: UUID
     device_type: str
-    modules: List[DeviceModuleItem]
+    is_auto: Optional[bool] = None
+    modules: List[Dict[str, Any]]
+
+class GroupedDIModule(BaseModel):
+    module_name: str
+    module_type: str
+    id: UUID | None
+    di_modules: List[DeviceModuleItem]
+
+
+class GroupedDOModule(BaseModel):
+    module_name: str
+    module_type: str
+    id: UUID | None
+    do_modules: List[DeviceModuleItem]
+
+# class DeviceModulesResponse(BaseModel):
+#     status: str
+#     device_id: UUID
+#     device_type: str
+#     is_auto: Optional[bool] = None
+#     Modules: List[Dict[str, Any]]
 
 class FRTUModuleCreate(FRTUModuleBase):
     @field_validator("last_update_time")

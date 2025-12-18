@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timezone
+from typing import Any, Dict, List
 from uuid import UUID
 from fastapi import Depends, HTTPException, Header, Request
 from src.config.auth_config import ALGORITHM, SECRET_KEY
@@ -286,16 +287,16 @@ async def read_device_by_id(device_id: UUID, requester_id: UUID, data: dict):
     }
 
 # ------------------Read Devices By Name or ID------------------
-async def read_device(data: dict, requester_id: UUID, page: int, limit: int):
-
+async def read_device(data: Dict[str, Any], requester_id: UUID, page: int, limit: int):
     entity = data.get("entity") or {}
     search_name = entity.get("name")
     raw_device_id = entity.get("device_id")
+    raw_site_id = entity.get("site_id")
 
     if raw_device_id:
         try:
             device_id = raw_device_id if isinstance(raw_device_id, UUID) else UUID(str(raw_device_id))
-        except:
+        except Exception:
             return HttpStatusCode.BAD_REQUEST.response("Invalid device ID format")
 
         rows = await FRTUDevices.select(id=device_id)
@@ -314,14 +315,14 @@ async def read_device(data: dict, requester_id: UUID, page: int, limit: int):
             sdict = {c.name: getattr(s, c.name) for c in s.__table__.columns}
             site_name = sdict["name"]
 
-        device_obj = {
+        device_obj: Dict[str, Any] = {
             "id": str(device_row["id"]),
             "site_id": str(site_id),
             "site_name": site_name,
             "name": device_row["name"],
             "type": device_row["type"],
             "creationTs": int(device_row["creation_time"].timestamp() * 1000) if device_row.get("creation_time") else None,
-            "lastUpdateTs": int(device_row["last_update_time"].timestamp() * 1000) if device_row.get("last_update_time") else None
+            "lastUpdateTs": int(device_row["last_update_time"].timestamp() * 1000) if device_row.get("last_update_time") else None,
         }
 
         for k, v in attr.items():
@@ -332,29 +333,39 @@ async def read_device(data: dict, requester_id: UUID, page: int, limit: int):
             "code": "OK",
             "message": "Device fetched successfully",
             "count": 1,
-            "devices": [device_obj]
+            "devices": [device_obj],
         }
 
     all_rows = await FRTUDevices.select()
-    device_list = []
+    device_list: List[Dict[str, Any]] = []
 
     for row in all_rows:
         device_row = {c.name: getattr(row, c.name) for c in row.__table__.columns}
         attr = device_row.get("attribute") or {}
 
-        device_list.append({
-            "id": str(device_row["id"]),
-            "site_id": str(device_row["site_id"]),
-            "name": device_row["name"],
-            "type": device_row["type"],
-            "label": attr.get("label"),
-            "description": attr.get("description"),
-            "module": attr.get("module"),
-            "no_of_Slave_Rack": attr.get("no_of_Slave_Rack"),
-            "creationTs": int(device_row["creation_time"].timestamp() * 1000) if device_row.get("creation_time") else None,
-            "lastUpdateTs": int(device_row["last_update_time"].timestamp() * 1000) if device_row.get("last_update_time") else None,
-            "site_name": attr.get("site_name")
-        })
+        device_list.append(
+            {
+                "id": str(device_row["id"]),
+                "site_id": str(device_row["site_id"]),
+                "name": device_row["name"],
+                "type": device_row["type"],
+                "label": attr.get("label"),
+                "description": attr.get("description"),
+                "module": attr.get("module"),
+                "no_of_Slave_Rack": attr.get("no_of_Slave_Rack"),
+                "creationTs": int(device_row["creation_time"].timestamp() * 1000) if device_row.get("creation_time") else None,
+                "lastUpdateTs": int(device_row["last_update_time"].timestamp() * 1000) if device_row.get("last_update_time") else None,
+                "site_name": attr.get("site_name"),
+            }
+        )
+
+    if raw_site_id:
+        try:
+            site_filter_id = raw_site_id if isinstance(raw_site_id, UUID) else UUID(str(raw_site_id))
+            site_filter_str = str(site_filter_id)
+            device_list = [d for d in device_list if d["site_id"] == site_filter_str]
+        except Exception:
+            return HttpStatusCode.BAD_REQUEST.response("Invalid site ID format")
 
     if search_name:
         search = search_name.lower()
@@ -375,9 +386,8 @@ async def read_device(data: dict, requester_id: UUID, page: int, limit: int):
         "limit": limit,
         "total_records": total_records,
         "total_pages": total_pages,
-        "devices": paginated
+        "devices": paginated,
     }
-
 
 # ---------------- Update Device ----------------
 async def update_device_by_name(data: dict, requester_id: UUID):
@@ -526,8 +536,7 @@ async def update_device_by_id(data: dict, requester_id: UUID):
         data=device_obj
     )
 
-async def delete_device(data: dict, requester_id: UUID):
-
+async def delete_device(data: Dict[str, Any], requester_id: UUID, confirm_delete: bool):
     entity = data.get("entity") or {}
     raw_id = entity.get("id") or entity.get("device_id")
 
@@ -536,39 +545,56 @@ async def delete_device(data: dict, requester_id: UUID):
 
     try:
         device_id = raw_id if isinstance(raw_id, UUID) else UUID(str(raw_id))
-    except:
+    except Exception:
         return HttpStatusCode.BAD_REQUEST.response("Invalid device ID format")
 
     rows = await FRTUDevices.select(id=device_id)
     if not rows:
         return HttpStatusCode.NOT_FOUND.response("Device not found")
 
-    device = rows[0]
-
     slots = await FRTUSlots.select(device_id=device_id)
-    slot_count = len(slots)
-    if slot_count == 0:
+    if not slots:
+        if not confirm_delete:
+            return HttpStatusCode.OK.response(
+                message="Device has no slots; deletion not confirmed",
+                data={"is_deleted": False},
+            )
         await FRTUDevices.delete(conditions={"id": device_id})
         return HttpStatusCode.OK.response(
             message="Device deleted successfully (no slots found)",
-            data={"device_id": str(device_id)}
+            data={"is_deleted": True},
         )
-    for s in slots:
-        attr = getattr(s, "attribute") or {}
-        module = attr.get("module") or attr.get("module_type") or None
 
-        if module:
-            return HttpStatusCode.BAD_REQUEST.response(
-                f"Cannot delete device. Slot '{s.name}' contains module '{module}'."
-            )
+    slot_ids = [getattr(s, "id") for s in slots]
+    modules = await FRTUModules.select()
+    modules_on_slots = [m for m in modules if getattr(m, "slot_id") in slot_ids]
+
+    if modules_on_slots:
+        slot_names = set()
+        for s in slots:
+            attr = getattr(s, "attribute") or {}
+            module = attr.get("module") or attr.get("module_type")
+            if module:
+                slot_names.add(getattr(s, "name", str(getattr(s, "id"))))
+        slot_list = ", ".join(sorted(slot_names)) if slot_names else "one or more slots"
+        return HttpStatusCode.BAD_REQUEST.response(
+            f"Cannot delete device. Modules are still mapped to {slot_list}.",
+            data={"is_deleted": False},
+        )
+
+    if not confirm_delete:
+        return HttpStatusCode.OK.response(
+            message="Device has only empty slots; deletion not confirmed",
+            data={"device_id": str(device_id), "is_deleted": False},
+        )
+
     await FRTUSlots.delete(conditions={"device_id": device_id})
     await FRTUDevices.delete(conditions={"id": device_id})
 
     return HttpStatusCode.OK.response(
         message="Device and all empty slots deleted successfully",
-        data={"device_id": str(device_id)}
+        data={"is_deleted": True},
     )
-
 
 
 # ---------------- Delete Device ----------------

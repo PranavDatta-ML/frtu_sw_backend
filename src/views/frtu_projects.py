@@ -326,8 +326,7 @@ async def delete_project_by_name(data: FRTUProjectDelete, user_id: UUID):
         return HttpStatusCode.SERVER_ERROR.response(str(e))
 
 
-async def delete_project_by_id(data: FRTUProjectDeleteByID, user_id: UUID):
-
+async def delete_project_by_id(data: FRTUProjectDeleteByID, user_id: UUID, confirm_delete: bool):
     project_id = UUID(data.entity["id"])
 
     assignments = await FRTUUserAssignment.select(user_id=user_id)
@@ -346,23 +345,27 @@ async def delete_project_by_id(data: FRTUProjectDeleteByID, user_id: UUID):
     if not project_rows:
         return HttpStatusCode.NOT_FOUND.response("Project not found under this tenant")
 
-    project = project_rows[0]
-
     children = await FRTUSites.select(project_id=project_id)
     if children:
-        return HttpStatusCode.BAD_REQUEST.response({
-            "title": "Cannot Delete Project",
-            "message": "Delete all sites under this project first",
-            "action_required": "delete_sites_first"
-        })
+        return HttpStatusCode.BAD_REQUEST.response(
+            {
+                "message": "Delete all sites under this project first",
+                "action_required": "delete_sites_first",
+                "is_deleted": False,
+            }
+        )
+
+    if not confirm_delete:
+        return HttpStatusCode.OK.response(
+            message="Project has no sites; deletion not confirmed",
+            data={"is_deleted": False},
+        )
 
     try:
         await FRTUProjects.delete(conditions={"id": project_id})
-
         return HttpStatusCode.OK.response(
             message="Project deleted successfully",
-            data={"project_id": str(project_id)}
+            data={"is_deleted": True},
         )
-
     except Exception as e:
         return HttpStatusCode.SERVER_ERROR.response(str(e))
