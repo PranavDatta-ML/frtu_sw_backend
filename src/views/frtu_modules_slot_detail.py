@@ -1,11 +1,13 @@
 import os
+from typing import Any, Dict, List
 from fastapi import Query, Request, Header, Depends
 from datetime import datetime, timezone
 import uuid
-
+from uuid import UUID
 from fastapi.responses import JSONResponse
 from src.core.settings import Settings
 from src.core.status_codes import HttpStatusCode
+from src.enums.FrtuDeviceType import FRTUDeviceCardType
 from src.models.frtu_devices import FRTUDevices
 from src.models.frtu_module_master import FRTUModuleMaster
 from src.models.frtu_module_type import FRTUModuleType
@@ -88,70 +90,48 @@ async def get_slot_module_detail(request: Request,frtuname: str,frtutype: str,sl
 
 
 # ------------------ Get Available Slot ---------------- 
-async def get_available_slots(request: Request,authorization: str = Header(...),settings: Settings = Depends(Settings.get_settings)):
-    try:
-        if not authorization or not authorization.startswith("Bearer "):
-            return {"status": "error", "message": "Invalid Authorization header"}
-
-        tenant_token = authorization.split(" ")[1]
-        try:
-            tenant_data = decode_token(tenant_token)
-        except Exception as e:
-            return {"status": "error", "message": f"Tenant token decode failed: {str(e)}"}
-
-        tenant_id_str = tenant_data.get("tenant_id")
-        if not tenant_id_str:
-            return {"status": "error", "message": "Invalid tenant token: tenant_id missing"}
-
-        try:
-            tenant_id = uuid.UUID(tenant_id_str)
-        except Exception as e:
-            return {"status": "error", "message": f"Invalid tenant_id in token: {str(e)}"}
-
-        projects = await FRTUProjects.select(tenant_id=tenant_id)
-        if not projects:
-            return {"status": "error", "message": "No projects found for this tenant"}
-
-        project_ids = [p.id for p in projects]
-        sites = await FRTUSites.select(project_id=project_ids)
-        if not sites:
-            return {"status": "error", "message": "No sites found under tenant projects"}
-
-        site_ids = [s.id for s in sites]
-        devices = await FRTUDevices.select(site_id=site_ids)
-        if not devices:
-            return {"status": "error", "message": "No devices found for this tenant"}
-
-        all_available_slots = []
-
-        for device in devices:
-            slots = await FRTUSlots.select(device_id=device.id)
-            for slot in slots:
-                modules = await FRTUModules.select(slot_id=slot.id)
-                if not modules:  
-                    try:
-                        slot_attr = slot.attribute or {}
-                        slot_no = slot_attr.get("slot_number")
-                        if slot_no is None:
-                            slot_no = int(slot.name.split("_")[-1]) if "_" in slot.name else None
-                        if slot_no:
-                            all_available_slots.append(slot_no)
-                    except Exception:
-                        continue
-
-        if not all_available_slots:
-            return {"status": "success", "available_slot_number": [], "message": "No available slots found."}
-
-        all_available_slots = sorted(list(set(all_available_slots)))
+async def get_available_slots(
+    device_id: UUID,
+    device_type: str,
+    is_available: bool,
+) -> Dict[str, Any]:
+    slots: List[FRTUSlots] = await FRTUSlots.select(device_id=device_id)
+    if not slots:
         return {
             "status": "success",
-            "available_slot_number": all_available_slots,
-            "message": f"{len(all_available_slots)} available slots found."
+            "device_id": str(device_id),
+            "device_type": device_type,
+            "slots": [],
         }
 
-    except Exception as e:
-        return {"status": "error", "message": f"Error fetching available slots: {str(e)}"}
+    slot_ids = [s.id for s in slots]
 
+    modules: List[FRTUModules] = await FRTUModules.select(slot_id=slot_ids)
+    occupied_slot_ids = {m.slot_id for m in modules}
+
+    def is_slot_available(slot: FRTUSlots) -> bool:
+        return slot.id not in occupied_slot_ids
+
+    if is_available:
+        filtered_slots = [s for s in slots if is_slot_available(s)]
+    else:
+        filtered_slots = slots
+
+    slots_list = [
+        {
+            "slot_id": str(s.id),
+            "slot_no": str(s.name),
+            "is_available": is_slot_available(s),
+        }
+        for s in filtered_slots
+    ]
+
+    return {
+        "status": "success",
+        "device_id": str(device_id),
+        "device_type": device_type,
+        "slots": slots_list,
+    }
 
 #  ------------------- Get Module Category type Options ----------------
 async def get_slot_module_options(request: Request,frtuname: str = Query(...),frtutype: str = Query(...),slotnumber: int = Query(...),authorization: str = Header(..., convert_underscores=False),settings: Settings = Depends(Settings.get_settings)):
@@ -254,48 +234,12 @@ async def get_slot_module_options(request: Request,frtuname: str = Query(...),fr
 
 
 # ------------------- Get Module Card types options ----------------
-async def get_card_type(request: Request, authorization: str = Header(...)):
-    if not authorization or not authorization.startswith("Bearer "):
-        return JSONResponse(
-            status_code=401,
-            content={"status": "error", "message": "Invalid Authorization header"}
-        )
-    
-    tenant_token = authorization.split(" ")[1]
-    try:
-        tenant_data = decode_token(tenant_token)
-    except Exception as e:
-        return JSONResponse(
-            status_code=401,
-            content={"status": "error", "message": f"Tenant token decode failed: {str(e)}"}
-        )
-    
-    tenant_id = tenant_data.get("tenant_id")
-    if not tenant_id:
-        return JSONResponse(
-            status_code=401,
-            content={"status": "error", "message": "tenant_id missing in token"}
-        )
-
-    card_types = [
-        "Power Supply",
-        "Slave Processor",
-        "Communication 1 : Ethernet",
-        "Communication 2 : OFC, Time Sync",
-        "Communication 3 : Modbus",
-        "DI-16 Digital Input",
-        "DO-10 Digital Output",
-        "AI-10 Analog Input",
-        "AO-8 Analog Output"
-    ]
-    
-    return JSONResponse(
-        status_code=200,
-        content={
-            "status": "success",
-            "card_types": card_types
-        }
-    )
+async def get_card_type() -> Dict[str, Any]:
+    card_types: List[str] = [c.value for c in FRTUDeviceCardType]
+    return {
+        "status": "success",
+        "card_types": card_types,
+    }
 
 
 # ------------------- Update Module Detail by slotnumber ----------------

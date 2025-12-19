@@ -343,18 +343,35 @@ async def get_device_modules(
             is_auto=is_auto,
             modules=[],
         )
+    module_type_ids = [m.module_type for m in modules]
+    types = await FRTUModuleType.select(id=module_type_ids) if module_type_ids else []
+    type_by_id = {t.id: t for t in types}
 
     if is_auto is not None:
         filtered: List[FRTUModules] = []
         for m in modules:
-            attr = m.attribute or {}
-            flag = attr.get("is_auto")
-            if bool(flag) != is_auto:
+            t = type_by_id.get(m.module_type)
+            type_name = t.name if t else None
+            if not type_name:
+                continue
+
+            upper_type = type_name.strip().upper()
+            if upper_type in ("PS", "SOM", "COM"):
                 filtered.append(m)
-            if bool(flag) == is_auto:
+                continue
+            # attr = m.attribute or {}
+            # raw_flag = attr.get("is_auto")
+            # flag = True if raw_flag is None else bool(raw_flag)
+
+            # if is_auto is True:
+            #     if flag is True:
+            #         filtered.append(m)
+            # else: 
+            #     if flag is False:
+            #         filtered.append(m)
+            if is_auto is False and upper_type in ("DI", "DO"):
                 filtered.append(m)
-            if bool(flag) == None:
-                filtered.append(m)
+
         modules = filtered
         if not modules:
             return DeviceModulesResponse(
@@ -364,11 +381,6 @@ async def get_device_modules(
                 is_auto=is_auto,
                 modules=[],
             )
-
-    module_type_ids = [m.module_type for m in modules]
-    types = await FRTUModuleType.select(id=module_type_ids) if module_type_ids else []
-    type_by_id = {t.id: t for t in types}
-
     masters = await FRTUModuleMaster.select()
     master_by_name = {mm.name.strip().upper(): mm for mm in masters}
     di_master = master_by_name.get("DIGITAL INPUT")
@@ -414,9 +426,9 @@ async def get_device_modules(
                     {
                         "slot_id": str(m.slot_id),
                         "di_module_id": str(m.id),  # frtu_modules.id
-                        "module_name": m.name,
+                        "module_name": f"Digital Input {idx}",
                     }
-                    for m in di_raw
+                    for idx, m in enumerate(di_raw, start=1)
                 ],
             }
         )
@@ -431,9 +443,9 @@ async def get_device_modules(
                     {
                         "slot_id": str(m.slot_id),
                         "do_module_id": str(m.id),  # frtu_modules.id
-                        "module_name": m.name,
+                        "module_name": f"Digital Output {idx}",
                     }
-                    for m in do_raw
+                    for idx, m in enumerate(do_raw, start=1)
                 ],
             }
         )
@@ -534,13 +546,13 @@ async def configure_module_manually(
         "status": "success",
         "http_code": 200,
         "message": "Module configured manually",
-        "data": {
-            "module_row_id": str(module_id_value),
-            "module_type": requested_type,
-            "slot_number": actual_slot_no,
-            "card_type": card_type,
-            "attribute": attr,
-        },
+        # "data": {
+        #     "module_row_id": str(module_id_value),
+        #     "module_type": requested_type,
+        #     "slot_number": actual_slot_no,
+        #     "card_type": card_type,
+        #     "attribute": attr,
+        # },
     }
 
 
@@ -575,28 +587,46 @@ async def get_configured_module(
     slots = await FRTUSlots.select(device_id=device_uuid, id=module.slot_id)
     if not slots:
         raise HTTPException(status_code=400, detail="Module does not belong to this device")
+    slot = slots[0]
 
-    attr = module.attribute or {}
-    slot_info = attr.get("slot_info") or {}
-    category_info = attr.get("category_info") or {}
+    try:
+        slot_number = int(str(slot.name))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid slot name format in frtu_slots")
 
     mtypes = await FRTUModuleType.select(id=module.module_type)
     module_type_name = mtypes[0].name if mtypes else ""
 
+    if module_type_name not in ("PS", "SOM"):
+        raise HTTPException(status_code=400, detail="This supports  only Power Supply (PS) and Master Processor (SOM) modules. Use the specific configuration API for other module types.")
+
+    attr = module.attribute or {}
+    slot_info = attr.get("slot_info") or None
+    category_info = attr.get("category_info") or None
+
+    fixed = FIXED_MASTER_SLOTS[module_type_name]
+    base_slot_info = {
+        "slot_number": fixed["slot_number"],
+        "slot_id": str(module.slot_id),
+        "card_type": fixed["card_type"],
+        "module_name": module.name,
+    }
+
+    if slot_info is None:
+        slot_info = base_slot_info
+    else:
+        merged = dict(base_slot_info)
+        merged.update(slot_info)
+        slot_info = merged
+
     return GetConfiguredModuleResponse(
         status="success",
         http_code=200,
-        message="Module configured manually",
+        message="Module Fetched Successfully",
         module_id=module.id,
         module_type=module_type_name,
         device_id=device_uuid,
-        slot_info=slot_info or None,
-        category_info=category_info or None,
+        slot_info=slot_info,
+        category_info=category_info,
     )
-
-
-
-
-
-
 

@@ -64,7 +64,7 @@ async def api_configure_module_manually(
     return await configure_module_manually(device_id, device_type, payload, user_id)
 
 # router
-@router.get("/configured_module", response_model=GetConfiguredModuleResponse)
+@router.get("/configured_module_detail", response_model=GetConfiguredModuleResponse)
 async def api_get_configured_module(
     module_id: UUID = Query(...),
     device_id: str = Query(...),
