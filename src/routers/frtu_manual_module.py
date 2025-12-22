@@ -35,8 +35,8 @@ async def api_add_module_auto(
 ):
     return await add_module(device_id, device_type, payload, user_id)
 
-
-@router.post("/add_module_manually")
+# ----------------------------- Payload like module_id,module_type and slot_id ---
+@router.post("/add_module_manually_di_do")
 async def api_add_module_manually(
     device_id: str = Query(...),
     device_type: str = Query(),

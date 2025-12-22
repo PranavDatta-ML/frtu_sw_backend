@@ -73,6 +73,29 @@ async def _get_modules_for_device(device_id: UUID) -> List[Tuple[int, str]]:
 #             await FRTUModules.delete(m.id)
 
 
+async def _delete_module_by_slot_type(device_id: UUID, logical_slot: int, module_type: str):
+    """Delete FRTUModule by device_id, logical_slot, and module_type"""
+    module_type_id = await _get_module_type_id(module_type)
+    if not module_type_id:
+        return
+    
+    modules = await FRTUModules.select(
+        device_id=device_id,
+        logical_slot=logical_slot,
+        module_type=module_type_id,
+    )
+    
+    for module in modules:
+        await FRTUModules.delete(module.id)
+        log.debug(f"Deleted module: id={module.id}, slot={logical_slot}, type={module_type}")
+
+
+async def _get_module_type_id(module_type_code: str) -> UUID | None:
+    """Get FRTUModuleType.id by type code (PS/SOM/COM/DI/DO)"""
+    types = await FRTUModuleType.select(name=module_type_code)
+    return types[0].id if types else None
+
+
 async def _insert_module(
     device_id: UUID,
     slot_id: UUID,
@@ -115,3 +138,20 @@ def _fmt_modules(di_slots: List[int], do_slots: List[int]) -> List[str]:
     for s in sorted(do_slots):
         modules.append(f"Digital Output ({s})")
     return modules
+
+def _get_display_name(module: FRTUModules, module_type: str, idx: int) -> str:
+    """Priority: custom name from general_info > auto-numbered fallback"""
+    attribute = dict(module.attribute or {})
+    info_key = "module_di_info" if module_type == "DI" else "module_do_info"
+    module_info = dict(attribute.get(info_key) or {})
+    general_info = dict(module_info.get("general_info") or {})
+    
+    custom_name = general_info.get("name")
+    if custom_name:
+        return str(custom_name)
+    if module_type == "DI":
+        return f"Digital Input {idx}"
+    elif module_type == "DO":
+        return f"Digital Output {idx}"
+    else:
+        return str(module.name)

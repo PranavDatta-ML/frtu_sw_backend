@@ -17,6 +17,7 @@ from src.models.frtu_sites import FRTUSites
 from src.models.frtu_slots import FRTUSlots
 from src.schemas.frtu_manual_module import ConfigureModuleManuallyRequest, GetConfiguredModuleResponse
 from src.schemas.frtu_modules import AddModuleAutoRequest, AddModuleManuallyRequest, DeviceModuleItem, DeviceModulesResponse
+from src.services.modules import _get_display_name
 from src.utils import frtu_client
 from src.utils.access_token import decode_token
 from src.utils.config_parser import  update_version_conf
@@ -426,7 +427,8 @@ async def get_device_modules(
                     {
                         "slot_id": str(m.slot_id),
                         "di_module_id": str(m.id),  # frtu_modules.id
-                        "module_name": f"Digital Input {idx}",
+                        # "module_name": f"Digital Input {idx}",
+                        "module_name": _get_display_name(m, "DI", idx),
                     }
                     for idx, m in enumerate(di_raw, start=1)
                 ],
@@ -443,7 +445,8 @@ async def get_device_modules(
                     {
                         "slot_id": str(m.slot_id),
                         "do_module_id": str(m.id),  # frtu_modules.id
-                        "module_name": f"Digital Output {idx}",
+                        # "module_name": f"Digital Output {idx}",
+                        "module_name": _get_display_name(m, "DO", idx),
                     }
                     for idx, m in enumerate(do_raw, start=1)
                 ],
