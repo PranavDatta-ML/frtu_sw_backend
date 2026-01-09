@@ -7,10 +7,126 @@ from src.models.frtu_module_master import FRTUModuleMaster
 from src.models.frtu_module_type import FRTUModuleType
 from src.models.frtu_modules import FRTUModules
 from src.models.frtu_slots import FRTUSlots
-from src.schemas.frtu_di_module import ConfigureDIModuleRequest
+from src.schemas.frtu_di_module import ConfigureDIModule, ConfigureDIModuleRequest
 from src.utils.frtu_client import frtu_client
 
-# async def add_di_do_module(
+# =========== Working code to add di module without general info ===========
+async def add_di_module(
+    device_id: str,
+    device_type: str,
+    payload: ConfigureDIModule,
+    user_id: UUID,
+):
+    if payload.slot_id is None:
+        raise HTTPException(status_code=400, detail="slot_id is required to add a module")
+    try:
+        device_uuid = UUID(device_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid device_id format")
+
+    devices = await FRTUDevices.select(id=device_uuid)
+    if not devices:
+        raise HTTPException(status_code=400, detail="Invalid device_id")
+    device = devices[0]
+    db_type = (
+        device.type.name
+        if hasattr(device.type, "name")
+        else (device.type.value if hasattr(device.type, "value") else str(device.type))
+    )
+    if db_type.strip().upper() != device_type.strip().upper():
+        raise HTTPException(status_code=400, detail="Device type does not match for this device_id")
+
+    requested_type = payload.module_type.strip().upper()
+    if requested_type not in ("DI", "DO"):
+        raise HTTPException(status_code=400, detail="Only DI/DO modules can be added with this API")
+
+    masters = await FRTUModuleMaster.select(id=payload.module_id)
+    if not masters:
+        raise HTTPException(status_code=400, detail="Invalid module_id")
+    master = masters[0]
+    master_name = master.name.strip().upper()
+    if requested_type == "DI" and "DIGITAL INPUT" not in master_name:
+        raise HTTPException(status_code=400, detail="module_type DI must be used with Digital Input module_id")
+    if requested_type == "DO" and "DIGITAL OUTPUT" not in master_name:
+        raise HTTPException(status_code=400, detail="module_type DO must be used with Digital Output module_id")
+
+    slots = await FRTUSlots.select(id=payload.slot_id, device_id=device_uuid)
+    if not slots:
+        raise HTTPException(status_code=400, detail="Given slot_id does not belong to this device")
+    slot = slots[0]
+    try:
+        slot_number = int(str(slot.name))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid slot name format in frtu_slots")
+
+    existing = await FRTUModules.select(slot_id=payload.slot_id)
+    if existing:
+        raise HTTPException(status_code=400, detail="Slot already occupied")
+
+    mtypes = await FRTUModuleType.select(name=requested_type)
+    if not mtypes:
+        raise HTTPException(status_code=400, detail="Invalid module_type")
+    mtype = mtypes[0]
+
+    # === BUILD ATTRIBUTE WITH general_info ===
+    info_key = "module_di_info" if requested_type == "DI" else "module_do_info"
+    general_info = payload.general_info or {}
+    
+    # Ensure required fields in general_info
+    general_info["slot_number"] = slot_number
+    general_info["slot_id"] = str(payload.slot_id)
+    # general_info["module_name"] = master.name
+    general_info["module_type"] = requested_type
+
+    module_info = {
+        "general_info": general_info
+    }
+    
+    full_attribute = {
+        "device_id": str(device_uuid),
+        "slot_number": slot_number,
+        info_key: module_info
+    }
+
+    try:
+        placed = await FRTUModules.insert(
+            slot_id=payload.slot_id,
+            name=master.name,
+            module_type=mtype.id,
+            description=getattr(master, "description", "") or "",
+            attribute=full_attribute,
+            channel=None,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save module: {e}")
+
+    try:
+        await asyncio.to_thread(
+            frtu_client.update_devids_conf,
+            slot_number,
+            requested_type,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Module saved but failed to update devids.conf: {e}",
+        )
+
+    return {
+        "status": "success",
+        "http_code": 201,
+        "message": "DI/DO module added successfully with general_info",
+        "data": {
+            "module_id": str(placed.id),
+            "slot_id": str(placed.slot_id),
+            "module_type": requested_type,
+            # "name": master.name,
+            "general_info": general_info,
+        },
+    }
+
+#=========== Working code to add di module with general info ===========
+# async def add_di_module(
 #     device_id: str,
 #     device_type: str,
 #     payload: ConfigureDIModuleRequest,
@@ -43,10 +159,12 @@ from src.utils.frtu_client import frtu_client
 #     if not masters:
 #         raise HTTPException(status_code=400, detail="Invalid module_id")
 #     master = masters[0]
-#     master_name = master.name.strip().upper()
-#     if requested_type == "DI" and "DIGITAL INPUT" not in master_name:
+#     master_name = str(master.name).strip().upper()
+#     master_description = str(master.description) if hasattr(master, 'description') and master.description else ""
+
+#     if requested_type == "DI" and master_name != "DIGITAL INPUT":
 #         raise HTTPException(status_code=400, detail="module_type DI must be used with Digital Input module_id")
-#     if requested_type == "DO" and "DIGITAL OUTPUT" not in master_name:
+#     if requested_type == "DO" and master_name != "DIGITAL OUTPUT":
 #         raise HTTPException(status_code=400, detail="module_type DO must be used with Digital Output module_id")
 
 #     slots = await FRTUSlots.select(id=payload.slot_id, device_id=device_uuid)
@@ -67,14 +185,11 @@ from src.utils.frtu_client import frtu_client
 #         raise HTTPException(status_code=400, detail="Invalid module_type")
 #     mtype = mtypes[0]
 
-#     # === BUILD ATTRIBUTE WITH general_info ===
 #     info_key = "module_di_info" if requested_type == "DI" else "module_do_info"
 #     general_info = payload.general_info or {}
-    
-#     # Ensure required fields in general_info
 #     general_info["slot_number"] = slot_number
 #     general_info["slot_id"] = str(payload.slot_id)
-#     general_info["module_name"] = master.name
+#     general_info["module_name"] = "Digital Input" if requested_type == "DI" else "Digital Output"
 #     general_info["module_type"] = requested_type
 
 #     module_info = {
@@ -90,9 +205,9 @@ from src.utils.frtu_client import frtu_client
 #     try:
 #         placed = await FRTUModules.insert(
 #             slot_id=payload.slot_id,
-#             name=master.name,
+#             name="Digital Input" if requested_type == "DI" else "Digital Output",
 #             module_type=mtype.id,
-#             description=getattr(master, "description", "") or "",
+#             description=master_description,
 #             attribute=full_attribute,
 #             channel=None,
 #         )
@@ -119,124 +234,10 @@ from src.utils.frtu_client import frtu_client
 #             "module_id": str(placed.id),
 #             "slot_id": str(placed.slot_id),
 #             "module_type": requested_type,
-#             "name": master.name,
+#             "name": "Digital Input" if requested_type == "DI" else "Digital Output",
 #             "general_info": general_info,
 #         },
 #     }
-
-async def add_di_module(
-    device_id: str,
-    device_type: str,
-    payload: ConfigureDIModuleRequest,
-    user_id: UUID,
-):
-    if payload.slot_id is None:
-        raise HTTPException(status_code=400, detail="slot_id is required to add a module")
-    try:
-        device_uuid = UUID(device_id)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid device_id format")
-
-    devices = await FRTUDevices.select(id=device_uuid)
-    if not devices:
-        raise HTTPException(status_code=400, detail="Invalid device_id")
-    device = devices[0]
-    db_type = (
-        device.type.name
-        if hasattr(device.type, "name")
-        else (device.type.value if hasattr(device.type, "value") else str(device.type))
-    )
-    if db_type.strip().upper() != device_type.strip().upper():
-        raise HTTPException(status_code=400, detail="Device type does not match for this device_id")
-
-    requested_type = payload.module_type.strip().upper()
-    if requested_type not in ("DI", "DO"):
-        raise HTTPException(status_code=400, detail="Only DI/DO modules can be added with this API")
-
-    masters = await FRTUModuleMaster.select(id=payload.module_id)
-    if not masters:
-        raise HTTPException(status_code=400, detail="Invalid module_id")
-    master = masters[0]
-    master_name = str(master.name).strip().upper()
-    master_description = str(master.description) if hasattr(master, 'description') and master.description else ""
-
-    if requested_type == "DI" and master_name != "DIGITAL INPUT":
-        raise HTTPException(status_code=400, detail="module_type DI must be used with Digital Input module_id")
-    if requested_type == "DO" and master_name != "DIGITAL OUTPUT":
-        raise HTTPException(status_code=400, detail="module_type DO must be used with Digital Output module_id")
-
-    slots = await FRTUSlots.select(id=payload.slot_id, device_id=device_uuid)
-    if not slots:
-        raise HTTPException(status_code=400, detail="Given slot_id does not belong to this device")
-    slot = slots[0]
-    try:
-        slot_number = int(str(slot.name))
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid slot name format in frtu_slots")
-
-    existing = await FRTUModules.select(slot_id=payload.slot_id)
-    if existing:
-        raise HTTPException(status_code=400, detail="Slot already occupied")
-
-    mtypes = await FRTUModuleType.select(name=requested_type)
-    if not mtypes:
-        raise HTTPException(status_code=400, detail="Invalid module_type")
-    mtype = mtypes[0]
-
-    info_key = "module_di_info" if requested_type == "DI" else "module_do_info"
-    general_info = payload.general_info or {}
-    general_info["slot_number"] = slot_number
-    general_info["slot_id"] = str(payload.slot_id)
-    general_info["module_name"] = "Digital Input" if requested_type == "DI" else "Digital Output"
-    general_info["module_type"] = requested_type
-
-    module_info = {
-        "general_info": general_info
-    }
-    
-    full_attribute = {
-        "device_id": str(device_uuid),
-        "slot_number": slot_number,
-        info_key: module_info
-    }
-
-    try:
-        placed = await FRTUModules.insert(
-            slot_id=payload.slot_id,
-            name="Digital Input" if requested_type == "DI" else "Digital Output",
-            module_type=mtype.id,
-            description=master_description,
-            attribute=full_attribute,
-            channel=None,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save module: {e}")
-
-    try:
-        await asyncio.to_thread(
-            frtu_client.update_devids_conf,
-            slot_number,
-            requested_type,
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Module saved but failed to update devids.conf: {e}",
-        )
-
-    return {
-        "status": "success",
-        "http_code": 201,
-        "message": "DI/DO module added successfully with general_info",
-        "data": {
-            "module_id": str(placed.id),
-            "slot_id": str(placed.slot_id),
-            "module_type": requested_type,
-            "name": "Digital Input" if requested_type == "DI" else "Digital Output",
-            "general_info": general_info,
-        },
-    }
-
 
 async def edit_di_module(
     device_id: str,
@@ -265,7 +266,7 @@ async def edit_di_module(
     if requested_type not in ("DI", "DO"):
         raise HTTPException(status_code=400, detail="Only DI/DO modules can be edited with this API")
 
-    placed_list = await FRTUModules.select(id=payload.module_id)
+    placed_list = await FRTUModules.select(id=payload.sub_module_id)
     if not placed_list:
         raise HTTPException(status_code=400, detail="Invalid module_id")
     placed = placed_list[0]
@@ -417,7 +418,7 @@ async def edit_di_module(
         "data": {
             "device_id": str(device_uuid),
             "slot_id": str(new_slot_id),
-            "module_id": str(placed_id),
+            "sub_module_id": str(placed_id),
             "module_type": requested_type,
             "slot_number": new_slot_no,
             "info_key": info_key,
@@ -428,14 +429,14 @@ async def edit_di_module(
 async def get_di_module_detail(
     device_id: str,
     device_type: str,
-    module_id: str,
+    sub_module_id: str,
     user_id: UUID,
 ) -> Dict[str, Any]:
     try:
         device_uuid = UUID(device_id)
-        module_uuid = UUID(module_id)
+        sub_module_uuid = UUID(sub_module_id)
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid device_id or module_id format")
+        raise HTTPException(status_code=400, detail="Invalid device_id or sub_module_id format")
 
     devices = await FRTUDevices.select(id=device_uuid)
     if not devices:
@@ -449,7 +450,7 @@ async def get_di_module_detail(
     if db_type.strip().upper() != device_type.strip().upper():
         raise HTTPException(status_code=400, detail="Device type does not match for this device_id")
 
-    modules = await FRTUModules.select(id=module_uuid)
+    modules = await FRTUModules.select(id=sub_module_uuid)
     if not modules:
         raise HTTPException(status_code=404, detail="Module not found")
     module = modules[0]
@@ -477,7 +478,7 @@ async def get_di_module_detail(
         "message": f"{module_type} module details retrieved successfully",
         "device_id": str(device_uuid),
         "device_type": device_type,
-        "module_id": str(module.id),
+        "sub_module_id": str(module.id),
         "module_type": module_type,
         "module_name": module.name,
         "slot_id": str(module.slot_id),

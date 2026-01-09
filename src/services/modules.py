@@ -155,3 +155,30 @@ def _get_display_name(module: FRTUModules, module_type: str, idx: int) -> str:
         return f"Digital Output {idx}"
     else:
         return str(module.name)
+    
+async def _delete_stale_di_do_modules(device_id: UUID, desired_di_do: set[tuple[int, str]]) -> int:
+    deleted_count = 0
+    
+    slots = await FRTUSlots.select(device_id=device_id)
+    slot_ids = {s.id for s in slots}
+    
+    all_modules = await FRTUModules.select()
+    for module in all_modules:
+        if module.slot_id not in slot_ids:
+            continue
+            
+        module_type_code = await _get_module_type_code(module.module_type)
+        if module_type_code not in {"DI", "DO"}:
+            continue
+        
+        attr = dict(module.attribute or {})
+        logical_slot = int(attr.get("slot_number", 0))
+        if logical_slot < 4:
+            continue
+            
+        key = (logical_slot, module_type_code)
+        if key not in desired_di_do:
+            await FRTUModules.delete(module.id)
+            log.info(f"Deleted stale module: device={device_id}, slot={logical_slot}, type={module_type_code}")
+            deleted_count += 1
+    return deleted_count

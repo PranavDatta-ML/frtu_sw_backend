@@ -1,1371 +1,843 @@
+import logging
 import os
-from fastapi import Query, Request, Header, Depends
+from typing import Any, Dict, List, Optional, Union
+from fastapi import HTTPException, Query, Request, Header, Depends
 from datetime import datetime, timezone
 import uuid
-
+from uuid import UUID, uuid4
 from fastapi.responses import JSONResponse
 from src.core.settings import Settings
 from src.models.frtu_devices import FRTUDevices
+from src.models.frtu_module_type import FRTUModuleType
 from src.models.frtu_modules import FRTUModules
 from src.models.frtu_projects import FRTUProjects
 from src.models.frtu_sites import FRTUSites
 from src.models.frtu_slots import FRTUSlots
+from src.schemas.frtu_di_module import ConfigureSingleDIChannelRequest
+from src.services.module_channel import _ensure_di_module_state, _parse_assoc_no
 from src.utils.access_token import decode_token
 from src.utils.config_parser import parse_devids_conf
-from src.utils.ini_handler import  update_ini_file
+from src.utils.ini_handler import  regenerate_module_ini
+logger = logging.getLogger(__name__)
 
-
-async def configure_di_channel_remote(
-    request: Request,
-    frtuname: str = Query(...),
-    frtutype: str = Query(...),
-    slotnumber: str = Query(...),
-    channel: str = Query(...),
-    authorization: str = Header(...),
-    settings: Settings = Depends(Settings.get_settings)
-):
+async def add_di_channel(
+    device_id: str,
+    device_type: str,
+    sub_module_id: UUID,
+    channel_no: int,
+    user_id: UUID,
+) -> Dict[str, Any]:
     try:
-        if not authorization or not authorization.startswith("Bearer "):
-            return JSONResponse(status_code=401, content={"status": "error", "message": "Invalid Authorization header"})
+        device_uuid = UUID(device_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid device_id format")
 
-        tenant_token = authorization.split(" ")[1]
-        try:
-            tenant_data = decode_token(tenant_token)
-        except Exception as e:
-            return JSONResponse(status_code=401, content={"status": "error", "message": f"Tenant token decode failed: {str(e)}"})
+    devices = await FRTUDevices.select(id=device_uuid)
+    if not devices:
+        raise HTTPException(status_code=400, detail="Invalid device_id")
+    dev = devices[0]
+    db_type = (
+        dev.type.name
+        if hasattr(dev.type, "name")
+        else (dev.type.value if hasattr(dev.type, "value") else str(dev.type))
+    )
+    if db_type.strip().upper() != device_type.strip().upper():
+        raise HTTPException(status_code=400, detail="Device type does not match for this device_id")
 
-        tenant_id_str = tenant_data.get("tenant_id")
-        if not tenant_id_str:
-            return JSONResponse(status_code=401, content={"status": "error", "message": "Invalid tenant token: tenant_id missing"})
+    mods = await FRTUModules.select(id=sub_module_id)
+    if not mods:
+        raise HTTPException(status_code=400, detail="Invalid sub_module_id")
+    m = mods[0]
+    module_id = m.id
+    slot_id = m.slot_id
+    channel: Dict[str, Any] = dict(m.channel or {})
 
-        try:
-            tenant_id = uuid.UUID(tenant_id_str)
-        except Exception as e:
-            return JSONResponse(status_code=400, content={"status": "error", "message": f"Invalid tenant_id in token: {str(e)}"})
+    slots = await FRTUSlots.select(id=slot_id, device_id=device_uuid)
+    if not slots:
+        raise HTTPException(status_code=400, detail="Module does not belong to this device")
 
-        try:
-            slotnumber = int(slotnumber)
-        except ValueError:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "slotnumber must be an integer"})
+    mtypes = await FRTUModuleType.select(id=m.module_type)
+    if not mtypes or mtypes[0].name.strip().upper() != "DI":
+        raise HTTPException(status_code=400, detail="Only DI sub-modules supported for this API")
 
-        if slotnumber < 4 or slotnumber > 11:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Can only configure channels for slots 4-11"})
+    channels_dict: Dict[str, Any] = dict(channel.get("channels") or {})
+    channel_no_int = int(channel_no)
+    if not (1 <= channel_no_int <= 16):
+        raise HTTPException(status_code=400, detail="channel_no must be between 1 and 16")
+    
+    key = f"channel_{channel_no_int}"
+    if key in channels_dict:
+        raise HTTPException(status_code=400, detail=f"Channel {channel_no_int} already exists")
 
-        channel_lower = channel.lower()
-        if not channel_lower.startswith("di_"):
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Channel must be in format 'di_X'"})
+    channel_id = str(uuid4())
+    default_name = f"DI Channel {channel_no_int:02d}"
 
-        try:
-            channel_number = int(channel_lower.split("_")[1])
-        except:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Invalid channel format"})
+    channels_dict[key] = {
+        "channel_id": channel_id,
+        "channel_no": str(channel_no_int),
+        "channel_name": default_name,
+    }
 
-        if channel_number < 1 or channel_number > 16:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "DI channel must be between di_1 and di_16"})
+    channel["channels"] = channels_dict
 
-        payload = await request.json()
-        ioa = payload.get("ioa")
+    await FRTUModules.update(
+        conditions={"id": module_id},
+        channel=channel,
+    )
+    channel_list = [
+        {
+            "channel_id": v.get("channel_id"),
+            "channel_no": v.get("channel_no"),
+            "channel_name": v.get("name", f"DI Channel {int(v.get('channel_no', 0)):02d}"),
+        }
+        for v in channels_dict.values()
+    ]
 
-        if not ioa:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "ioa is required"})
+    # channel_list: List[Dict[str, Any]] = []
+    # for k, v in channels_dict.items():
+    #     channel_list.append(
+    #         {
+    #             k: {
+    #                 "channel_id": v.get("channel_id"),
+    #                 "channel_no": v.get("channel_no"),
+    #             }
+    #         }
+    #     )
 
-        projects = await FRTUProjects.select(tenant_id=tenant_id)
-        if not projects:
-            return JSONResponse(status_code=404, content={"status": "error", "message": "No projects found for this tenant"})
+    return {
+        "status": "success",
+        "message": "DI channel added successfully",
+        "device_id": device_id,
+        "sub_module_id": str(module_id),
+        "channel": channel_list,
+    }
 
-        project_ids = [p.id for p in projects]
-        sites = await FRTUSites.select(project_id=project_ids)
-        if not sites:
-            return JSONResponse(status_code=404, content={"status": "error", "message": "No sites found"})
+async def get_di_channel_list(
+    device_id: str,
+    device_type: str,
+    sub_module_id: UUID,
+    user_id: UUID,
+) -> Dict[str, Any]:
+    try:
+        device_uuid = UUID(device_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid device_id format")
 
-        site_ids = [s.id for s in sites]
-        devices = await FRTUDevices.select(name=frtuname, type=frtutype, site_id=site_ids)
-        if not devices:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Device '{frtuname}' not found"})
+    devices = await FRTUDevices.select(id=device_uuid)
+    if not devices:
+        raise HTTPException(status_code=400, detail="Invalid device_id")
+    dev = devices[0]
+    db_type = (
+        dev.type.name
+        if hasattr(dev.type, "name")
+        else (dev.type.value if hasattr(dev.type, "value") else str(dev.type))
+    )
+    if db_type.strip().upper() != device_type.strip().upper():
+        raise HTTPException(status_code=400, detail="Device type does not match")
 
-        device = devices[0]
-        slots = await FRTUSlots.select(device_id=device.id)
-        if not slots or slotnumber > len(slots):
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Slot {slotnumber} not found"})
+    mods = await FRTUModules.select(id=sub_module_id)
+    if not mods:
+        raise HTTPException(status_code=400, detail="Invalid sub_module_id")
+    m = mods[0]
+    module_id = m.id
 
-        slot = slots[slotnumber - 1]
-        modules = await FRTUModules.select(slot_id=slot.id)
-        if not modules:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"No module found in slot {slotnumber}"})
+    slots = await FRTUSlots.select(id=m.slot_id, device_id=device_uuid)
+    if not slots:
+        raise HTTPException(status_code=400, detail="Module does not belong to this device")
 
-        module = modules[0]
-        current_attr = module.get("attribute", {}) or {}
-        module_type = current_attr.get("module_type", "").upper()
+    mtypes = await FRTUModuleType.select(id=m.module_type)
+    if not mtypes or mtypes[0].name.strip().upper() != "DI":
+        raise HTTPException(status_code=400, detail="Only DI modules supported")
 
-        if module_type != "DI":
-            return JSONResponse(status_code=400, content={"status": "error", "message": f"Slot {slotnumber} has {module_type} module, cannot configure DI channel"})
+    channel: Dict[str, Any] = dict(m.channel or {})
+    channels_dict: Dict[str, Any] = dict(channel.get("channels") or {})
 
-        devids_slot_no = slotnumber - 3
-        serial_channel = f"SERIAL_CH{devids_slot_no:02d}"
-
-        try:
-            devids_data = parse_devids_conf()
-            devids_conf = next((c for c in devids_data if int(c.get("slot_no", -1)) == devids_slot_no), None)
+    channel_list = []
+    for v in channels_dict.values():
+        channel_no_raw = v.get("channel_no")
+        if channel_no_raw is None:
+            continue
             
-            if devids_conf:
-                serialport = devids_conf.get("dev_path", "/dev/ttyS1")
-                module_id_from_conf = devids_conf.get("module_id", "xxxxxxxxxxxxx")
-            else:
-                serialport = "/dev/ttyS1"
-                module_id_from_conf = "xxxxxxxxxxxxx"
-        except:
-            serialport = "/dev/ttyS1"
-            module_id_from_conf = "xxxxxxxxxxxxx"
-
-        deviceid = current_attr.get("module_id", module_id_from_conf)
-        devicetype = "DI"
-        status = "ENABLED"
-
-        current_channel = module.get("channel", {}) or {}
-        
-        channel_key = f"channel_{devids_slot_no:02d}"
-        if channel_key not in current_channel:
-            current_channel[channel_key] = {}
-        
-        current_channel[channel_key]["serialport"] = serialport
-        current_channel[channel_key]["deviceid"] = deviceid
-        current_channel[channel_key]["devicetype"] = devicetype
-        current_channel[channel_key]["status"] = status
-
-        if channel_lower not in current_channel[channel_key]:
-            current_channel[channel_key][channel_lower] = {}
-        
-        current_channel[channel_key][channel_lower].update(payload)
-
-        ts = payload.get("ts", "0")
-        is_configure = "1"
-        
         try:
-            update_ini_file(
-                module_type, 
-                serial_channel, 
-                channel_lower, 
-                ioa, 
-                ts, 
-                is_configure,
-                serialport=serialport,
-                deviceid=deviceid,
-                devicetype=devicetype
-            )
-        except Exception as e:
-            return JSONResponse(status_code=500, content={"status": "error", "message": f"Failed to update INI file: {str(e)}"})
-
-        naive_utc_now = datetime.utcnow()
-        
-        await FRTUModules.update(
-            extra={},
-            conditions={"id": module["id"]},
-            channel=current_channel,
-            last_update_time=naive_utc_now
-        )
-
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "success",
-                "message": f"DI Channel {channel} configured successfully for slot {slotnumber}",
-                "channel_details": {
-                    "frtu_name": frtuname,
-                    "slot_number": slotnumber,
-                    "module_type": module_type,
-                    "channel": channel_lower,
-                    "serial_channel": serial_channel,
-                    "serialport": serialport,
-                    "deviceid": deviceid,
-                    "devicetype": devicetype,
-                    "status": status,
-                    "configuration": current_channel[channel_key][channel_lower]
-                },
-                "ini_file_updated": True
-            }
-        )
-
-    except Exception as e:
-        return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
-
-async def configure_di_channel_properties(
-    request: Request,
-    frtuname: str = Query(...),
-    frtutype: str = Query(...),
-    slotnumber: str = Query(...),
-    channel: str = Query(...),
-    authorization: str = Header(...),
-    settings: Settings = Depends(Settings.get_settings)
-):
-    try:
-        if not authorization or not authorization.startswith("Bearer "):
-            return JSONResponse(status_code=401, content={"status": "error", "message": "Invalid Authorization header"})
-
-        tenant_token = authorization.split(" ")[1]
-        tenant_data = decode_token(tenant_token)
-        tenant_id_str = tenant_data.get("tenant_id")
-        if not tenant_id_str:
-            return JSONResponse(status_code=401, content={"status": "error", "message": "Invalid tenant token"})
-        tenant_id = uuid.UUID(tenant_id_str)
-
-        try:
-            slotnumber = int(slotnumber)
+            ch_no_int = int(str(channel_no_raw))
         except ValueError:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "slotnumber must be integer"})
+            ch_no_int = None
 
-        if slotnumber < 4 or slotnumber > 11:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Can only configure properties for slots 4-11"})
+        stored_name = v.get("name")
+        if stored_name:
+            channel_name = stored_name
+        elif ch_no_int is not None:
+            channel_name = f"DI Channel {ch_no_int:02d}"
+        else:
+            channel_name = None
 
-        channel_lower = channel.lower()
-        if not channel_lower.startswith("di_"):
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Channel must be in format di_X"})
-
-        payload = await request.json()
-
-        projects = await FRTUProjects.select(tenant_id=tenant_id)
-        if not projects:
-            return JSONResponse(status_code=404, content={"status": "error", "message": "No projects found"})
-        project_ids = [p.id for p in projects]
-
-        sites = await FRTUSites.select(project_id=project_ids)
-        if not sites:
-            return JSONResponse(status_code=404, content={"status": "error", "message": "No sites found"})
-        site_ids = [s.id for s in sites]
-
-        devices = await FRTUDevices.select(name=frtuname, type=frtutype, site_id=site_ids)
-        if not devices:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Device '{frtuname}' not found"})
-
-        device = devices[0]
-        slots = await FRTUSlots.select(device_id=device.id)
-        if not slots or slotnumber > len(slots):
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Slot {slotnumber} not found"})
-
-        slot = slots[slotnumber - 1]
-        modules = await FRTUModules.select(slot_id=slot.id)
-        if not modules:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"No module found in slot {slotnumber}"})
-
-        module = modules[0]
-        attr = module.get("attribute", {}) or {}
-        module_type = attr.get("module_type", "").upper()
-
-        if module_type != "DI":
-            return JSONResponse(status_code=400, content={"status": "error", "message": f"Slot {slotnumber} has {module_type}, not DI"})
-
-        channel_data = module.get("channel", {}) or {}
-        channel_key = f"channel_{slotnumber - 3:02d}"
-
-        if channel_key not in channel_data:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"No channels configured in slot {slotnumber}. Configure remote channel first."})
-
-        if channel_lower not in channel_data[channel_key]:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Channel '{channel_lower}' not configured yet. Configure remote channel first."})
-
-        channel_data[channel_key][channel_lower].update(payload)
-
-        naive_utc_now = datetime.utcnow()
-        await FRTUModules.update(
-            extra={},
-            conditions={"id": module["id"]},
-            channel=channel_data,
-            last_update_time=naive_utc_now
-        )
-
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "success",
-                "message": f"DI Channel properties configured successfully for {channel_lower} at slot {slotnumber}",
-                "updated_properties": payload
-            },
-        )
-
-    except Exception as e:
-        return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
+        channel_list.append({
+            "channel_id": v.get("channel_id"),
+            "channel_no": str(ch_no_int) if ch_no_int is not None else str(channel_no_raw),
+            "channel_name": channel_name,
+        })
+    return {
+        "status": "success",
+        "message": "DI channel fetched successfully",
+        "device_id": device_id,
+        "sub_module_id": str(module_id),
+        "channel": channel_list,
+    }
 
 
+# async def configure_di_channel_info_func(
+#     device_id: str,
+#     device_type: str,
+#     payload: ConfigureSingleDIChannelRequest,
+#     user_id: UUID,
+# ) -> Dict[str, Any]:
+#     try:
+#         device_uuid = UUID(device_id)
+#     except Exception:
+#         raise HTTPException(status_code=400, detail="Invalid device_id format")
 
+#     devices = await FRTUDevices.select(id=device_uuid)
+#     if not devices:
+#         raise HTTPException(status_code=400, detail="Invalid device_id")
+#     dev = devices[0]
+#     db_type = (
+#         dev.type.name
+#         if hasattr(dev.type, "name")
+#         else (dev.type.value if hasattr(dev.type, "value") else str(dev.type))
+#     )
+#     if db_type.strip().upper() != device_type.strip().upper():
+#         raise HTTPException(status_code=400, detail="Device type does not match")
 
-async def configure_do_channel_remote(
-    request: Request,
-    frtuname: str = Query(...),
-    frtutype: str = Query(...),
-    slotnumber: str = Query(...),
-    channel: str = Query(...),
-    authorization: str = Header(...),
-    settings: Settings = Depends(Settings.get_settings)
-):
-    try:
-        if not authorization or not authorization.startswith("Bearer "):
-            return JSONResponse(status_code=401, content={"status": "error", "message": "Invalid Authorization header"})
+#     state = await _ensure_di_module_state(device_uuid, payload.sub_module_id)
+#     module_id: UUID = state["module_id"]
+#     attr: Dict[str, Any] = state["attribute"]
+#     channel: Dict[str, Any] = state["channel"]
+#     info_key: str = state["info_key"]
 
-        tenant_token = authorization.split(" ")[1]
-        tenant_data = decode_token(tenant_token)
-        tenant_id_str = tenant_data.get("tenant_id")
-        if not tenant_id_str:
-            return JSONResponse(status_code=401, content={"status": "error", "message": "Invalid tenant token"})
-        tenant_id = uuid.UUID(tenant_id_str)
+#     modules = await FRTUModules.select(id=module_id)
+#     if not modules:
+#         raise HTTPException(status_code=400, detail="Module not found")
+#     m = modules[0]
+#     slot_id = m.slot_id
 
-        try:
-            slotnumber = int(slotnumber)
-        except ValueError:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "slotnumber must be an integer"})
+#     channels_map: Dict[str, Any] = dict(channel.get("channels") or {})
+    
+#     req = payload.channel
+#     ch_id = req.channel_id
+#     channel_type = req.channel_type
+#     if channel_type == "Double Point Parameter" and not req.associate_channel_id:
+#         raise HTTPException(status_code=400, detail="associate_channel_id required for Double Point Parameter")
+#     target_key = None
+#     target_no = None
+#     for key, idx in channels_map.items():
+#         if idx.get("channel_id") == ch_id:
+#             target_key = key
+#             target_no = idx.get("channel_no")
+#             break
 
-        if slotnumber < 4 or slotnumber > 11:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Can only configure channels for slots 4-11"})
+#     if not target_key:
+#         raise HTTPException(status_code=400, detail="channel_id not found")
 
-        channel_lower = channel.lower()
-        if not channel_lower.startswith("do_"):
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Channel must be in format 'do_X'"})
+#     for field, value in req.dict(exclude_unset=True).items():
+#         channels_map[target_key][field] = value
 
-        try:
-            channel_number = int(channel_lower.split("_")[1])
-        except:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Invalid channel format"})
+#     used_as_assoc_ids: set[str] = set()
+#     for cfg in channels_map.values():
+#         assoc_id = cfg.get("associate_channel_id")
+#         if assoc_id:
+#             used_as_assoc_ids.add(assoc_id)
 
-        if channel_number < 1 or channel_number > 10:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "DO channel must be between do_1 and do_10"})
+#     associateable_channels: List[Dict[str, Any]] = []
+#     for key, cfg in channels_map.items():
+#         cid = cfg.get("channel_id")
+#         if cid == ch_id:
+#             continue
+#         if cfg.get("channel_type") != "Single Point Parameter":
+#             continue
+#         if cid in used_as_assoc_ids:
+#             continue
+#         if not cfg.get("is_enabled", False):
+#             continue
+#         associateable_channels.append({
+#             "label": f"DI channel {cfg.get('channel_no')}",
+#             "channel_id": cid,
+#             "channel_no": cfg.get("channel_no"),
+#         })
 
-        payload = await request.json()
-        ioa = payload.get("ioa")
+#     for k, cfg in channels_map.items():
+#         if cfg.get("channel_no"):
+#             try:
+#                 cfg["channel_no"] = str(int(str(cfg["channel_no"])))
+#             except ValueError:
+#                 pass
+#     target_cfg = channels_map[target_key]
+#     associate_channel_id = target_cfg.get("associate_channel_id")
+    
+#     if target_cfg.get("channel_type") == "Double Point Parameter" and associate_channel_id:
+#         assoc_id = associate_channel_id
+#         assoc_entry = None
+#         assoc_key = None
+        
+#         for key, cfg in channels_map.items():
+#             if cfg.get("channel_id") == assoc_id:
+#                 assoc_key = key
+#                 assoc_entry = cfg
+#                 break
 
-        if not ioa:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "ioa is required"})
+#         if not assoc_entry:
+#             raise HTTPException(status_code=400, detail=f"Associated channel {assoc_id} not found")
 
-        projects = await FRTUProjects.select(tenant_id=tenant_id)
-        if not projects:
-            return JSONResponse(status_code=404, content={"status": "error", "message": "No projects found"})
-        project_ids = [p.id for p in projects]
+#         if assoc_entry.get("channel_type") not in (None, "Single Point Parameter"):
+#             raise HTTPException(status_code=400, detail=f"Associated channel must be Single Point Parameter")
 
-        sites = await FRTUSites.select(project_id=project_ids)
-        if not sites:
-            return JSONResponse(status_code=404, content={"status": "error", "message": "No sites found"})
-        site_ids = [s.id for s in sites]
+#         if not assoc_entry.get("is_enabled", False):
+#             raise HTTPException(status_code=400, detail=f"Associated channel must be enabled")
 
-        devices = await FRTUDevices.select(name=frtuname, type=frtutype, site_id=site_ids)
-        if not devices:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Device '{frtuname}' not found"})
+#         main_ioa = target_cfg.get("ioa")
+#         if not main_ioa:
+#             raise HTTPException(status_code=400, detail="ioa required for Double Point")
 
-        device = devices[0]
-        slots = await FRTUSlots.select(device_id=device.id)
-        if not slots or slotnumber > len(slots):
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Slot {slotnumber} not found"})
+#         target_cfg["ioa"] = main_ioa
+#         target_cfg["channel_type"] = "Double Point Parameter"
+        
+#         assoc_entry["ioa"] = main_ioa
+#         assoc_entry["channel_type"] = "Double Point Parameter"
+#         assoc_entry["associate_channel_id"] = ch_id
+        
+#         channels_map[target_key] = target_cfg
+#         channels_map[assoc_key] = assoc_entry
 
-        slot = slots[slotnumber - 1]
-        modules = await FRTUModules.select(slot_id=slot.id)
-        if not modules:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"No module found in slot {slotnumber}"})
+#     target_cfg = channels_map[target_key]
+#     if target_cfg.get("timestamp_enable") is not None and target_cfg.get("io_activation_mode") is not None:
+#         target_cfg["is_enabled"] = target_cfg["timestamp_enable"] and target_cfg["io_activation_mode"] not in ("0", "0: disabled")
 
-        module = modules[0]
-        current_attr = module.get("attribute", {}) or {}
-        module_type = current_attr.get("module_type", "").upper()
+#     channel["channels"] = channels_map
 
-        if module_type != "DO":
-            return JSONResponse(status_code=400, content={"status": "error", "message": f"Slot {slotnumber} has {module_type} module, cannot configure DO channel"})
+#     await FRTUModules.update(
+#         conditions={"id": module_id},
+#         attribute=attr,
+#         channel=channel,
+#     )
 
-        devids_slot_no = slotnumber - 3
-        serial_channel = f"SERIAL_CH{devids_slot_no:02d}"
+#     module_info = attr.get(info_key, {})
+#     general_info = module_info.get("general_info", {})
+#     slot_number = general_info.get("slot_number")
+#     if not slot_number:
+#         raise HTTPException(status_code=500, detail="slot_number not found")
 
-        try:
-            devids_data = parse_devids_conf()
-            devids_conf = next((c for c in devids_data if int(c.get("slot_no", -1)) == devids_slot_no), None)
+#     module_num = int(slot_number) - 3
+#     serial_channel = f"MODULE_{module_num}"
+
+#     dp_pairs_set = set()
+#     for cfg in channels_map.values():
+#         if cfg.get("channel_type") != "Double Point Parameter" or not cfg.get("is_enabled"):
+#             continue
             
-            if devids_conf:
-                serialport = devids_conf.get("dev_path", "/dev/ttyS1")
-                module_id_from_conf = devids_conf.get("module_id", "xxxxxxxxxxxxx")
+#         assoc_id = cfg.get("associate_channel_id")
+#         if not assoc_id:
+#             continue
+            
+#         assoc_ch = next((c for c in channels_map.values() if c.get("channel_id") == assoc_id), None)
+#         if not assoc_ch or assoc_ch.get("channel_type") != "Double Point Parameter":
+#             continue
+            
+#         a = int(cfg["channel_no"])
+#         b = int(assoc_ch["channel_no"])
+#         if a != b:
+#             p1, p2 = (a, b) if a < b else (b, a)
+#             dp_pairs_set.add(f"{p1},{p2}")
+
+#     dp_pairs = sorted(dp_pairs_set, key=lambda x: int(x.split(",")[0]))
+
+#     regenerate_module_ini(
+#         ini_path="rtu_config_iec104_di.ini",
+#         serial_channel=serial_channel,
+#         channels=channels_map,
+#         dp_pairs=dp_pairs,
+#     )
+
+#     logger.info(f"FRTU di.ini: Slot {slot_number} → {serial_channel}, dp_pairs={dp_pairs}")
+
+#     return {
+#         "status": "success",
+#         "message": "DI channel configured successfully",
+#         "device_id": device_id,
+#         "sub_module_id": str(module_id),
+#         "channels": channels_map,
+#         "associateable_channels": associateable_channels,
+#     }
+
+async def configure_di_channel_info_func(
+    device_id: str,
+    device_type: str,
+    payload: ConfigureSingleDIChannelRequest,
+    user_id: UUID,
+) -> Dict[str, Any]:
+    try:
+        device_uuid = UUID(device_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid device_id format")
+
+    devices = await FRTUDevices.select(id=device_uuid)
+    if not devices:
+        raise HTTPException(status_code=400, detail="Invalid device_id")
+    dev = devices[0]
+    db_type = (
+        dev.type.name
+        if hasattr(dev.type, "name")
+        else (dev.type.value if hasattr(dev.type, "value") else str(dev.type))
+    )
+    if db_type.strip().upper() != device_type.strip().upper():
+        raise HTTPException(status_code=400, detail="Device type does not match")
+
+    state = await _ensure_di_module_state(device_uuid, payload.sub_module_id)
+    module_id: UUID = state["module_id"]
+    attr: Dict[str, Any] = state["attribute"]
+    channel: Dict[str, Any] = state["channel"]
+    info_key: str = state["info_key"]
+
+    modules = await FRTUModules.select(id=module_id)
+    if not modules:
+        raise HTTPException(status_code=400, detail="Module not found")
+    m = modules[0]
+    slot_id = m.slot_id
+
+    channels_map: Dict[str, Any] = dict(channel.get("channels") or {})
+    
+    req = payload.channel
+    ch_id = req.channel_id
+    channel_type = req.channel_type
+    
+    target_key = None
+    target_no = None
+    for key, idx in channels_map.items():
+        if idx.get("channel_id") == ch_id:
+            target_key = key
+            target_no = idx.get("channel_no")
+            break
+
+    if not target_key:
+        raise HTTPException(status_code=400, detail="channel_id not found")
+
+    for field, value in req.dict(exclude_unset=True).items():
+        channels_map[target_key][field] = value
+
+    # Track standalone DP channels and used associations
+    standalone_dp_channels = []
+    used_as_assoc = set()
+    for key, cfg in channels_map.items():
+        assoc_id = cfg.get("associate_channel_id")
+        if assoc_id:
+            used_as_assoc.add(assoc_id)
+        elif not assoc_id and cfg.get("channel_type") == "Double Point Parameter" and cfg.get("is_enabled", False):
+            if cfg.get("channel_id") not in used_as_assoc:
+                standalone_dp_channels.append({
+                    "channel_id": cfg.get("channel_id"),
+                    "channel_no": cfg.get("channel_no"),
+                    "label": f"DI channel {cfg.get('channel_no')}",
+                    "normal_state": cfg.get("normal_state", "")
+                })
+
+    associateable_channels: List[Dict[str, Any]] = standalone_dp_channels
+
+    for k, cfg in channels_map.items():
+        if cfg.get("channel_no"):
+            try:
+                cfg["channel_no"] = str(int(str(cfg["channel_no"])))
+            except ValueError:
+                pass
+
+    target_cfg = channels_map[target_key]
+    associate_channel_id = target_cfg.get("associate_channel_id")
+    
+    # STRICT: No changing associations - error if already associated
+    if channel_type == "Double Point Parameter":
+        # Check if target channel already has ANY association
+        if target_cfg.get("associate_channel_id"):
+            current_assoc_id = target_cfg.get("associate_channel_id")
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Target channel already associated with channel {current_assoc_id}"
+            )
+        
+        if associate_channel_id:
+            assoc_id = associate_channel_id
+            assoc_entry = None
+            assoc_key = None
+            
+            for key, cfg in channels_map.items():
+                if cfg.get("channel_id") == assoc_id:
+                    assoc_key = key
+                    assoc_entry = cfg
+                    break
+            
+            if not assoc_entry:
+                raise HTTPException(status_code=400, detail=f"Associated channel {assoc_id} not found")
+            
+            # Check if assoc channel already has ANY association
+            if assoc_entry.get("associate_channel_id"):
+                current_assoc_id = assoc_entry.get("associate_channel_id")
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Associated channel already paired with channel {current_assoc_id}"
+                )
+            
+            if assoc_entry.get("channel_type") != "Double Point Parameter":
+                raise HTTPException(status_code=400, detail="Associated channel must be Double Point Parameter")
+            if not assoc_entry.get("is_enabled", False):
+                raise HTTPException(status_code=400, detail="Associated channel must be enabled")
+            
+            main_normal_state = target_cfg.get("normal_state", "").upper()
+            assoc_normal_state = assoc_entry.get("normal_state", "").upper()
+            
+            if main_normal_state == assoc_normal_state:
+                raise HTTPException(status_code=400, detail="Associated channel normal_state must be opposite of main channel")
+            
+            if req.release_dp_group:
+                target_cfg.update({
+                    "associate_channel_id": None,
+                    "dp_group_id": None
+                })
+                assoc_entry.update({
+                    "associate_channel_id": None,
+                    "dp_group_id": None
+                })
             else:
-                serialport = "/dev/ttyS1"
-                module_id_from_conf = "xxxxxxxxxxxxx"
-        except:
-            serialport = "/dev/ttyS1"
-            module_id_from_conf = "xxxxxxxxxxxxx"
+                used_groups = set()
+                for cfg in channels_map.values():
+                    if cfg.get("dp_group_id") and cfg.get("associate_channel_id"):
+                        used_groups.add(cfg.get("dp_group_id"))
+                
+                available_groups = []
+                for i in range(1, 9):
+                    group_id = f"DP{i}"
+                    if group_id not in used_groups:
+                        available_groups.append(group_id)
+                
+                if not available_groups:
+                    raise HTTPException(status_code=400, detail="Maximum 8 Double Point groups reached")
+                
+                group_id = available_groups[0]
+                dp_ioa = f"101{int(group_id[2:]) + 14}"
+                
+                main_ioa = target_cfg.get("ioa") or dp_ioa
+                target_cfg.update({
+                    "ioa": main_ioa,
+                    "dp_group_id": group_id,
+                    "associate_channel_id": assoc_id
+                })
+                
+                assoc_entry.update({
+                    "ioa": main_ioa,
+                    "dp_group_id": group_id,
+                    "associate_channel_id": ch_id
+                })
+                
+                channels_map[target_key] = target_cfg
+                channels_map[assoc_key] = assoc_entry
+        else:
+            # Standalone DP
+            target_cfg["channel_type"] = "Double Point Parameter"
+            target_cfg["normal_state"] = "ON"
+            target_cfg["associate_channel_id"] = None
+            target_cfg.pop("dp_group_id", None)
 
-        deviceid = current_attr.get("module_id", module_id_from_conf)
-        devicetype = "DO"
-        status = "ENABLED"
+    target_cfg = channels_map[target_key]
+    if target_cfg.get("timestamp_enable") is not None and target_cfg.get("io_activation_mode") is not None:
+        target_cfg["is_enabled"] = target_cfg["timestamp_enable"] and target_cfg.get("io_activation_mode") not in ("0", "0: disabled")
 
-        current_channel = module.get("channel", {}) or {}
+    channel["channels"] = channels_map
+
+    await FRTUModules.update(
+        conditions={"id": module_id},
+        attribute=attr,
+        channel=channel,
+    )
+
+    module_info = attr.get(info_key, {})
+    general_info = module_info.get("general_info", {})
+    slot_number = general_info.get("slot_number")
+    if not slot_number:
+        raise HTTPException(status_code=500, detail="slot_number not found")
+
+    module_num = int(slot_number) - 3
+    serial_channel = f"MODULE_{module_num}"
+
+    dp_pairs_set = set()
+    for cfg in channels_map.values():
+        if cfg.get("channel_type") != "Double Point Parameter" or not cfg.get("is_enabled"):
+            continue
         
-        channel_key = f"channel_{devids_slot_no:02d}"
-        if channel_key not in current_channel:
-            current_channel[channel_key] = {}
+        assoc_id = cfg.get("associate_channel_id")
+        if not assoc_id:
+            continue
         
-        current_channel[channel_key]["serialport"] = serialport
-        current_channel[channel_key]["deviceid"] = deviceid
-        current_channel[channel_key]["devicetype"] = devicetype
-        current_channel[channel_key]["status"] = status
-
-        if channel_lower not in current_channel[channel_key]:
-            current_channel[channel_key][channel_lower] = {}
+        assoc_ch = next((c for c in channels_map.values() if c.get("channel_id") == assoc_id), None)
+        if not assoc_ch or assoc_ch.get("channel_type") != "Double Point Parameter":
+            continue
         
-        current_channel[channel_key][channel_lower].update(payload)
+        a = int(cfg["channel_no"])
+        b = int(assoc_ch["channel_no"])
+        if a != b:
+            p1, p2 = (a, b) if a < b else (b, a)
+            dp_pairs_set.add(f"{p1},{p2}")
+
+    dp_pairs = sorted(dp_pairs_set, key=lambda x: int(x.split(",")[0]))
+
+    regenerate_module_ini(
+        ini_path="rtu_config_iec104_di.ini",
+        # ini_path="di.ini",
+        serial_channel=serial_channel,
+        channels=channels_map,
+        dp_pairs=dp_pairs,
+    )
+
+    logger.info(f"FRTU di.ini: Slot {slot_number} → {serial_channel}, dp_pairs={dp_pairs}")
+
+    return {
+        "status": "success",
+        "message": "DI channel configured successfully",
+        "device_id": device_id,
+        "sub_module_id": str(module_id),
+        "channels": channels_map,
+        "associateable_channels": associateable_channels,
+    }
 
-        ts = payload.get("ts", "0")
-        is_configure = "1"
-        
-        try:
-            update_ini_file(
-                module_type, 
-                serial_channel, 
-                channel_lower, 
-                ioa, 
-                ts, 
-                is_configure,
-                serialport=serialport,
-                deviceid=deviceid,
-                devicetype=devicetype
-            )
-        except Exception as e:
-            return JSONResponse(status_code=500, content={"status": "error", "message": f"Failed to update INI file: {str(e)}"})
 
-        naive_utc_now = datetime.utcnow()
-        
-        await FRTUModules.update(
-            extra={},
-            conditions={"id": module["id"]},
-            channel=current_channel,
-            last_update_time=naive_utc_now
-        )
-
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "success",
-                "message": f"DO Channel {channel} configured successfully for slot {slotnumber}",
-                "channel_details": {
-                    "frtu_name": frtuname,
-                    "slot_number": slotnumber,
-                    "module_type": module_type,
-                    "channel": channel_lower,
-                    "serial_channel": serial_channel,
-                    "serialport": serialport,
-                    "deviceid": deviceid,
-                    "devicetype": devicetype,
-                    "status": status,
-                    "configuration": current_channel[channel_key][channel_lower]
-                },
-                "ini_file_updated": True
-            }
-        )
-
-    except Exception as e:
-        return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
-
-async def configure_do_channel_properties(
-    request: Request,
-    frtuname: str = Query(...),
-    frtutype: str = Query(...),
-    slotnumber: str = Query(...),
-    channel: str = Query(...),
-    authorization: str = Header(...),
-    settings: Settings = Depends(Settings.get_settings)
-):
-    try:
-        if not authorization or not authorization.startswith("Bearer "):
-            return JSONResponse(status_code=401, content={"status": "error", "message": "Invalid Authorization header"})
-
-        tenant_token = authorization.split(" ")[1]
-        tenant_data = decode_token(tenant_token)
-        tenant_id_str = tenant_data.get("tenant_id")
-        if not tenant_id_str:
-            return JSONResponse(status_code=401, content={"status": "error", "message": "Invalid tenant token"})
-        tenant_id = uuid.UUID(tenant_id_str)
-
-        try:
-            slotnumber = int(slotnumber)
-        except ValueError:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "slotnumber must be integer"})
-
-        if slotnumber < 4 or slotnumber > 11:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Can only configure properties for slots 4-11"})
-
-        channel_lower = channel.lower()
-        if not channel_lower.startswith("do_"):
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Channel must be in format do_X"})
-
-        payload = await request.json()
-
-        projects = await FRTUProjects.select(tenant_id=tenant_id)
-        if not projects:
-            return JSONResponse(status_code=404, content={"status": "error", "message": "No projects found"})
-        project_ids = [p.id for p in projects]
-
-        sites = await FRTUSites.select(project_id=project_ids)
-        if not sites:
-            return JSONResponse(status_code=404, content={"status": "error", "message": "No sites found"})
-        site_ids = [s.id for s in sites]
-
-        devices = await FRTUDevices.select(name=frtuname, type=frtutype, site_id=site_ids)
-        if not devices:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Device '{frtuname}' not found"})
-
-        device = devices[0]
-        slots = await FRTUSlots.select(device_id=device.id)
-        if not slots or slotnumber > len(slots):
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Slot {slotnumber} not found"})
-
-        slot = slots[slotnumber - 1]
-        modules = await FRTUModules.select(slot_id=slot.id)
-        if not modules:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"No module found in slot {slotnumber}"})
-
-        module = modules[0]
-        attr = module.get("attribute", {}) or {}
-        module_type = attr.get("module_type", "").upper()
-
-        if module_type != "DO":
-            return JSONResponse(status_code=400, content={"status": "error", "message": f"Slot {slotnumber} has {module_type}, not DO"})
-
-        channel_data = module.get("channel", {}) or {}
-        channel_key = f"channel_{slotnumber - 3:02d}"
-
-        if channel_key not in channel_data:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"No channels configured in slot {slotnumber}. Configure remote channel first."})
-
-        if channel_lower not in channel_data[channel_key]:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Channel '{channel_lower}' not configured yet. Configure remote channel first."})
-
-        channel_data[channel_key][channel_lower].update(payload)
-
-        naive_utc_now = datetime.utcnow()
-        await FRTUModules.update(
-            extra={},
-            conditions={"id": module["id"]},
-            channel=channel_data,
-            last_update_time=naive_utc_now
-        )
-
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "success",
-                "message": f"DO Channel properties configured successfully for {channel_lower} at slot {slotnumber}",
-                "updated_properties": payload
-            },
-        )
-
-    except Exception as e:
-        return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
-
-
-
-async def update_di_channel_remote(
-    request: Request,
-    frtuname: str = Query(...),
-    frtutype: str = Query(...),
-    slotnumber: int = Query(...),
-    channel: str = Query(...),
-    authorization: str = Header(...),
-    settings: Settings = Depends(Settings.get_settings)
-):
-    try:
-        if not authorization or not authorization.startswith("Bearer "):
-            return JSONResponse(status_code=401, content={"status": "error", "message": "Invalid Authorization header"})
-
-        token = authorization.split(" ")[1]
-        tenant_data = decode_token(token)
-        tenant_id = uuid.UUID(tenant_data.get("tenant_id"))
-
-        try:
-            slotnumber = int(slotnumber)
-        except ValueError:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "slotnumber must be integer"})
-
-        if slotnumber < 4 or slotnumber > 11:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Slotnumber must be between 4 and 11"})
-        channel_lower = channel.lower()
-        if not channel_lower.startswith("di_"):
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Channel must be in format di_X"})
-
-        payload = await request.json()
-        if not payload:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Payload cannot be empty"})
-
-        projects = await FRTUProjects.select(tenant_id=tenant_id)
-        if not projects:
-            return JSONResponse(status_code=404, content={"status": "error", "message": "No projects found"})
-        project_ids = [p.id for p in projects]
-
-        sites = await FRTUSites.select(project_id=project_ids)
-        if not sites:
-            return JSONResponse(status_code=404, content={"status": "error", "message": "No sites found"})
-        site_ids = [s.id for s in sites]
-
-        devices = await FRTUDevices.select(name=frtuname, type=frtutype, site_id=site_ids)
-        if not devices:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Device '{frtuname}' not found"})
-        device = devices[0]
-
-        slots = await FRTUSlots.select(device_id=device.id)
-        if not slots or slotnumber > len(slots):
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Slot {slotnumber} not found"})
-
-        slot = slots[slotnumber - 1]
-        modules = await FRTUModules.select(slot_id=slot.id)
-        if not modules:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"No module found in slot {slotnumber}"})
-        module = modules[0]
-
-        attr = module.get("attribute", {}) or {}
-        module_type = attr.get("module_type", "").upper()
-        if module_type != "DI":
-            return JSONResponse(status_code=400, content={"status": "error", "message": f"Slot {slotnumber} has {module_type} module, not DI"})
-
-        channel_data = module.get("channel", {}) or {}
-        channel_key = f"channel_{slotnumber - 3:02d}"
-
-        if channel_key not in channel_data or channel_lower not in channel_data[channel_key]:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Channel '{channel_lower}' not configured yet"})
-
-        channel_data[channel_key][channel_lower].update(payload)
-
-        ioa = channel_data[channel_key][channel_lower].get("ioa", payload.get("ioa", ""))
-        ts = channel_data[channel_key][channel_lower].get("ts", payload.get("ts", "0"))
-        serial_channel = f"SERIAL_CH{slotnumber - 3:02d}"
-        serialport = channel_data[channel_key].get("serialport", "/dev/ttyS1")
-        deviceid = channel_data[channel_key].get("deviceid", "xxxxxxxxxxxxx")
-        devicetype = channel_data[channel_key].get("devicetype", "DI")
-        is_configure = "1"
-
-        try:
-            update_ini_file(
-                module_type,
-                serial_channel,
-                channel_lower,
-                ioa,
-                ts,
-                is_configure,
-                serialport=serialport,
-                deviceid=deviceid,
-                devicetype=devicetype
-            )
-        except Exception as e:
-            return JSONResponse(status_code=500, content={"status": "error", "message": f"Failed to update INI file: {str(e)}"})
-
-        await FRTUModules.update(
-            extra={},
-            conditions={"id": module["id"]},
-            channel=channel_data,
-            last_update_time=datetime.utcnow()
-        )
-
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "success",
-                "message": f"DI Channel {channel_lower} updated successfully for slot {slotnumber}",
-                "updated_data": payload,
-                "ini_file_updated": True
-            }
-        )
-
-    except Exception as e:
-        return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
-
-async def update_di_channel_properties(
-    request: Request,
-    frtuname: str = Query(...),
-    frtutype: str = Query(...),
-    slotnumber: int = Query(...),
-    channel: str = Query(...),
-    authorization: str = Header(...),
-    settings: Settings = Depends(Settings.get_settings)
-):
-    try:
-        if not authorization or not authorization.startswith("Bearer "):
-            return JSONResponse(status_code=401, content={"status": "error", "message": "Invalid Authorization header"})
-
-        token = authorization.split(" ")[1]
-        tenant_data = decode_token(token)
-        tenant_id = uuid.UUID(tenant_data.get("tenant_id"))
-
-        try:
-            slotnumber = int(slotnumber)
-        except ValueError:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "slotnumber must be integer"})
-
-        if slotnumber < 4 or slotnumber > 11:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Slotnumber must be between 4 and 11"})
-        channel_lower = channel.lower()
-        if not channel_lower.startswith("di_"):
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Channel must be in format di_X"})
-
-        payload = await request.json()
-        if not payload:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Payload cannot be empty"})
-
-        projects = await FRTUProjects.select(tenant_id=tenant_id)
-        if not projects:
-            return JSONResponse(status_code=404, content={"status": "error", "message": "No projects found"})
-        project_ids = [p.id for p in projects]
-
-        sites = await FRTUSites.select(project_id=project_ids)
-        if not sites:
-            return JSONResponse(status_code=404, content={"status": "error", "message": "No sites found"})
-        site_ids = [s.id for s in sites]
-
-        devices = await FRTUDevices.select(name=frtuname, type=frtutype, site_id=site_ids)
-        if not devices:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Device '{frtuname}' not found"})
-        device = devices[0]
-
-        slots = await FRTUSlots.select(device_id=device.id)
-        if not slots or slotnumber > len(slots):
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Slot {slotnumber} not found"})
-
-        slot = slots[slotnumber - 1]
-        modules = await FRTUModules.select(slot_id=slot.id)
-        if not modules:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"No module found in slot {slotnumber}"})
-        module = modules[0]
-
-        attr = module.get("attribute", {}) or {}
-        module_type = attr.get("module_type", "").upper()
-        if module_type != "DI":
-            return JSONResponse(status_code=400, content={"status": "error", "message": f"Slot {slotnumber} has {module_type} module, not DI"})
-
-        channel_data = module.get("channel", {}) or {}
-        channel_key = f"channel_{slotnumber - 3:02d}"
-
-        if channel_key not in channel_data or channel_lower not in channel_data[channel_key]:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Channel '{channel_lower}' not configured yet"})
-
-        channel_data[channel_key][channel_lower].update(payload)
-
-        serial_channel = f"SERIAL_CH{slotnumber - 3:02d}"
-        serialport = channel_data[channel_key].get("serialport", "/dev/ttyS1")
-        deviceid = channel_data[channel_key].get("deviceid", "xxxxxxxxxxxxx")
-        devicetype = channel_data[channel_key].get("devicetype", "DI")
-        ioa = channel_data[channel_key][channel_lower].get("ioa", "0")
-        ts = channel_data[channel_key][channel_lower].get("ts", "0")
-        is_configure = "1"
-
-        try:
-            update_ini_file(
-                module_type,
-                serial_channel,
-                channel_lower,
-                ioa,
-                ts,
-                is_configure,
-                serialport=serialport,
-                deviceid=deviceid,
-                devicetype=devicetype
-            )
-        except Exception as e:
-            return JSONResponse(status_code=500, content={"status": "error", "message": f"Failed to update INI file: {str(e)}"})
-
-        await FRTUModules.update(
-            extra={},
-            conditions={"id": module["id"]},
-            channel=channel_data,
-            last_update_time=datetime.utcnow()
-        )
-
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "success",
-                "message": f"DI Channel properties updated successfully for {channel_lower} (slot {slotnumber})",
-                "updated_properties": payload,
-                "ini_file_updated": True
-            }
-        )
-
-    except Exception as e:
-        return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
-
-
-
-async def update_do_channel_remote(
-    request: Request,
-    frtuname: str = Query(...),
-    frtutype: str = Query(...),
-    slotnumber: int = Query(...),
-    channel: str = Query(...),
-    authorization: str = Header(...),
-    settings: Settings = Depends(Settings.get_settings)
-):
-    try:
-        if not authorization or not authorization.startswith("Bearer "):
-            return JSONResponse(status_code=401, content={"status": "error", "message": "Invalid Authorization header"})
-        token = authorization.split(" ")[1]
-        tenant_data = decode_token(token)
-        tenant_id = uuid.UUID(tenant_data.get("tenant_id"))
-
-        try:
-            slotnumber = int(slotnumber)
-        except ValueError:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "slotnumber must be integer"})
-        
-        if slotnumber < 4 or slotnumber > 11:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Slotnumber must be between 4 and 11"})
-        channel_lower = channel.lower()
-        if not channel_lower.startswith("do_"):
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Channel must be in format do_X"})
-
-        payload = await request.json()
-        if not payload:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Payload cannot be empty"})
-
-        projects = await FRTUProjects.select(tenant_id=tenant_id)
-        if not projects:
-            return JSONResponse(status_code=404, content={"status": "error", "message": "No projects found"})
-        project_ids = [p.id for p in projects]
-
-        sites = await FRTUSites.select(project_id=project_ids)
-        if not sites:
-            return JSONResponse(status_code=404, content={"status": "error", "message": "No sites found"})
-        site_ids = [s.id for s in sites]
-
-        devices = await FRTUDevices.select(name=frtuname, type=frtutype, site_id=site_ids)
-        if not devices:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Device '{frtuname}' not found"})
-        device = devices[0]
-
-        slots = await FRTUSlots.select(device_id=device.id)
-        if not slots or slotnumber > len(slots):
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Slot {slotnumber} not found"})
-        slot = slots[slotnumber - 1]
-
-        modules = await FRTUModules.select(slot_id=slot.id)
-        if not modules:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"No module found in slot {slotnumber}"})
-        module = modules[0]
-
-        attr = module.get("attribute", {}) or {}
-        module_type = attr.get("module_type", "").upper()
-        if module_type != "DO":
-            return JSONResponse(status_code=400, content={"status": "error", "message": f"Slot {slotnumber} has {module_type} module, not DO"})
-
-        channel_data = module.get("channel", {}) or {}
-        channel_key = f"channel_{slotnumber - 3:02d}"
-
-        if channel_key not in channel_data or channel_lower not in channel_data[channel_key]:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Channel '{channel_lower}' not configured yet"})
-
-        channel_data[channel_key][channel_lower].update(payload)
-
-        ioa = channel_data[channel_key][channel_lower].get("ioa", payload.get("ioa", ""))
-        ts = channel_data[channel_key][channel_lower].get("ts", payload.get("ts", "0"))
-        serial_channel = f"SERIAL_CH{slotnumber - 3:02d}"
-        serialport = channel_data[channel_key].get("serialport", "/dev/ttyS1")
-        deviceid = channel_data[channel_key].get("deviceid", "xxxxxxxxxxxxx")
-        devicetype = "DO"
-        is_configure = "1"
-
-        try:
-            update_ini_file(
-                module_type,
-                serial_channel,
-                channel_lower,
-                ioa,
-                ts,
-                is_configure,
-                serialport=serialport,
-                deviceid=deviceid,
-                devicetype=devicetype
-            )
-        except Exception as e:
-            return JSONResponse(status_code=500, content={"status": "error", "message": f"Failed to update .ini file: {str(e)}"})
-
-        await FRTUModules.update(
-            extra={},
-            conditions={"id": module["id"]},
-            channel=channel_data,
-            last_update_time=datetime.utcnow()
-        )
-
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "success",
-                "message": f"DO Channel {channel_lower} updated successfully for slot {slotnumber}",
-                "updated_data": payload,
-                "ini_file_updated": True
-            }
-        )
-
-    except Exception as e:
-        return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
-
-
-async def update_do_channel_properties(
-    request: Request,
-    frtuname: str = Query(...),
-    frtutype: str = Query(...),
-    slotnumber: int = Query(...),
-    channel: str = Query(...),
-    authorization: str = Header(...),
-    settings: Settings = Depends(Settings.get_settings)
-):
-    try:
-        if not authorization or not authorization.startswith("Bearer "):
-            return JSONResponse(status_code=401, content={"status": "error", "message": "Invalid Authorization header"})
-        token = authorization.split(" ")[1]
-        tenant_data = decode_token(token)
-        tenant_id = uuid.UUID(tenant_data.get("tenant_id"))
-
-        try:
-            slotnumber = int(slotnumber)
-        except ValueError:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "slotnumber must be integer"})
-        
-        if slotnumber < 4 or slotnumber > 11:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Slotnumber must be between 4 and 11"})
-        channel_lower = channel.lower()
-        if not channel_lower.startswith("do_"):
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Channel must be in format do_X"})
-
-        payload = await request.json()
-        if not payload:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Payload cannot be empty"})
-
-        projects = await FRTUProjects.select(tenant_id=tenant_id)
-        if not projects:
-            return JSONResponse(status_code=404, content={"status": "error", "message": "No projects found"})
-        project_ids = [p.id for p in projects]
-
-        sites = await FRTUSites.select(project_id=project_ids)
-        if not sites:
-            return JSONResponse(status_code=404, content={"status": "error", "message": "No sites found"})
-        site_ids = [s.id for s in sites]
-
-        devices = await FRTUDevices.select(name=frtuname, type=frtutype, site_id=site_ids)
-        if not devices:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Device '{frtuname}' not found"})
-        device = devices[0]
-
-        slots = await FRTUSlots.select(device_id=device.id)
-        if not slots or slotnumber > len(slots):
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Slot {slotnumber} not found"})
-        slot = slots[slotnumber - 1]
-
-        modules = await FRTUModules.select(slot_id=slot.id)
-        if not modules:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"No module found in slot {slotnumber}"})
-        module = modules[0]
-
-        attr = module.get("attribute", {}) or {}
-        module_type = attr.get("module_type", "").upper()
-        if module_type != "DO":
-            return JSONResponse(status_code=400, content={"status": "error", "message": f"Slot {slotnumber} has {module_type} module, not DO"})
-
-        channel_data = module.get("channel", {}) or {}
-        channel_key = f"channel_{slotnumber - 3:02d}"
-        if channel_key not in channel_data or channel_lower not in channel_data[channel_key]:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Channel '{channel_lower}' not configured yet"})
-
-        channel_data[channel_key][channel_lower].update(payload)
-
-        ioa = channel_data[channel_key][channel_lower].get("ioa", payload.get("ioa", ""))
-        ts = channel_data[channel_key][channel_lower].get("ts", payload.get("ts", "0"))
-        serial_channel = f"SERIAL_CH{slotnumber - 3:02d}"
-        serialport = channel_data[channel_key].get("serialport", "/dev/ttyS1")
-        deviceid = channel_data[channel_key].get("deviceid", "xxxxxxxxxxxxx")
-        devicetype = "DO"
-        is_configure = "1"
-
-        try:
-            update_ini_file(
-                module_type,
-                serial_channel,
-                channel_lower,
-                ioa,
-                ts,
-                is_configure,
-                serialport=serialport,
-                deviceid=deviceid,
-                devicetype=devicetype
-            )
-        except Exception as e:
-            return JSONResponse(status_code=500, content={"status": "error", "message": f"Failed to update .ini file: {str(e)}"})
-
-        await FRTUModules.update(
-            extra={},
-            conditions={"id": module["id"]},
-            channel=channel_data,
-            last_update_time=datetime.utcnow()
-        )
-
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "success",
-                "message": f"DO Channel properties updated successfully for {channel_lower} (slot {slotnumber})",
-                "updated_properties": payload,
-                "ini_file_updated": True
-            }
-        )
-
-    except Exception as e:
-        return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
 
 
 async def get_di_channel_detail(
-    request: Request,
-    frtuname: str = Query(...),
-    slotnumber: str = Query(...),
-    channel: str = Query(...),
-    authorization: str = Header(...),
-    settings: Settings = Depends(Settings.get_settings)
-):
+    device_id: str,
+    device_type: str,
+    sub_module_id: str,
+    channel_id: str,
+    user_id: UUID,
+) -> Dict[str, Any]:
     try:
-        if not authorization or not authorization.startswith("Bearer "):
-            return JSONResponse(status_code=401, content={"status": "error", "message": "Invalid Authorization header"})
+        device_uuid = UUID(device_id)
+        sub_module_uuid = UUID(sub_module_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid device_id or sub_module_id format")
 
-        tenant_token = authorization.split(" ")[1]
-        try:
-            tenant_data = decode_token(tenant_token)
-        except Exception as e:
-            return JSONResponse(status_code=401, content={"status": "error", "message": f"Tenant token decode failed: {str(e)}"})
+    devices = await FRTUDevices.select(id=device_uuid)
+    if not devices:
+        raise HTTPException(status_code=400, detail="Invalid device_id")
+    dev = devices[0]
+    db_type = (
+        dev.type.name
+        if hasattr(dev.type, "name")
+        else (dev.type.value if hasattr(dev.type, "value") else str(dev.type))
+    )
+    if db_type.strip().upper() != device_type.strip().upper():
+        raise HTTPException(status_code=400, detail="Device type does not match for this device_id")
 
-        tenant_id_str = tenant_data.get("tenant_id")
-        if not tenant_id_str:
-            return JSONResponse(status_code=401, content={"status": "error", "message": "Invalid tenant token: tenant_id missing"})
+    mods = await FRTUModules.select(id=sub_module_uuid)
+    if not mods:
+        raise HTTPException(status_code=400, detail="Invalid sub_module_id")
+    m = mods[0]
+    module_id = m.id
+    slot_id = m.slot_id
+    ch_blob: Dict[str, Any] = dict(m.channel or {})
 
-        try:
-            tenant_id = uuid.UUID(tenant_id_str)
-        except Exception as e:
-            return JSONResponse(status_code=400, content={"status": "error", "message": f"Invalid tenant_id in token: {str(e)}"})
+    slots = await FRTUSlots.select(id=slot_id, device_id=device_uuid)
+    if not slots:
+        raise HTTPException(status_code=400, detail="Module does not belong to this device")
 
-        try:
-            slotnumber = int(slotnumber)
-        except ValueError:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "slotnumber must be an integer"})
+    mtypes = await FRTUModuleType.select(id=m.module_type)
+    if not mtypes or mtypes[0].name.strip().upper() != "DI":
+        raise HTTPException(status_code=400, detail="Only DI modules supported")
 
-        if slotnumber < 4 or slotnumber > 11:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Can only get channel details for slots 4-11"})
+    channels_map: Dict[str, Any] = dict(ch_blob.get("channels") or {})
+    if not channels_map:
+        raise HTTPException(status_code=404, detail="No channels configured for this module")
 
-        channel_lower = channel.lower()
-        if not channel_lower.startswith("di_"):
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Channel must be in format 'di_X'"})
+    found_key = None
+    found_cfg = None
+    for key, cfg in channels_map.items():
+        if cfg.get("channel_id") == channel_id:
+            found_key = key
+            found_cfg = cfg
+            break
 
-        try:
-            channel_number = int(channel_lower.split("_")[1])
-        except:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Invalid channel format"})
+    if not found_cfg:
+        raise HTTPException(status_code=404, detail="channel_id not found for this module")
 
-        if channel_number < 1 or channel_number > 16:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "DI channel must be between di_1 and di_16"})
+    used_as_assoc_ids: set[str] = set()
+    for cfg in channels_map.values():
+        assoc_id = cfg.get("associate_channel_id")
+        if assoc_id:
+            used_as_assoc_ids.add(assoc_id)
 
-        projects = await FRTUProjects.select(tenant_id=tenant_id)
-        if not projects:
-            return JSONResponse(status_code=404, content={"status": "error", "message": "No projects found for this tenant"})
+    associateable_channels: List[Dict[str, Any]] = []
+    for key, cfg in channels_map.items():
+        cid = cfg.get("channel_id")
+        if cid == channel_id:
+            continue
+        if cfg.get("channel_type") != "Single Point Parameter":
+            continue
+        if cid in used_as_assoc_ids:
+            continue
+        if not cfg.get("is_enabled", False):
+            continue
+        associateable_channels.append({
+            "name": f"DI channel {cfg.get('channel_no')}",
+            "channel_id": cid,
+            "channel_no": cfg.get("channel_no"),
+        })
 
-        project_ids = [p.id for p in projects]
-        sites = await FRTUSites.select(project_id=project_ids)
-        if not sites:
-            return JSONResponse(status_code=404, content={"status": "error", "message": "No sites found"})
-
-        site_ids = [s.id for s in sites]
-        devices = await FRTUDevices.select(name=frtuname, site_id=site_ids)
-        if not devices:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Device '{frtuname}' not found"})
-
-        device = devices[0]
-        slots = await FRTUSlots.select(device_id=device.id)
-        if not slots or slotnumber > len(slots):
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Slot {slotnumber} not found"})
-
-        slot = slots[slotnumber - 1]
-        modules = await FRTUModules.select(slot_id=slot.id)
-        if not modules:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"No module found in slot {slotnumber}"})
-
-        module = modules[0]
-        current_attr = module.get("attribute", {}) or {}
-        module_type = current_attr.get("module_type", "").upper()
-
-        if module_type != "DI":
-            return JSONResponse(status_code=400, content={"status": "error", "message": f"Slot {slotnumber} has {module_type} module, not DI"})
-
-        channel_data = module.get("channel", {}) or {}
-        devids_slot_no = slotnumber - 3
-        channel_key = f"channel_{devids_slot_no:02d}"
-
-        if channel_key not in channel_data:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"No channels configured in slot {slotnumber}"})
-
-        if channel_lower not in channel_data[channel_key]:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Channel '{channel_lower}' not configured yet"})
-
-        channel_config = channel_data[channel_key][channel_lower]
-
-        general_info = {
-            "id": channel_config.get("id", ""),
-            "name": channel_config.get("name", ""),
-            "description": channel_config.get("description", ""),
-            "high_level_filter": channel_config.get("high_level_filter", ""),
-            "low_level_filter": channel_config.get("low_level_filter", "")
-        }
-
-        time_stamp = channel_config.get("time_stamp", "0")
-        inverse = channel_config.get("inverse", "0")
-
-        channel_info = {
-            "channel_type": channel_config.get("channel_type", ""),
-            "DI_input": channel_config.get("DI_input", channel_lower),
-            "time_stamp": "Enabled" if time_stamp == "1" else "Disabled",
-            "inverse": "Enabled" if inverse == "1" else "Disabled",
-            "off_delay": channel_config.get("off_delay", ""),
-            "on_delay": channel_config.get("on_delay", ""),
-            "tag_name": channel_config.get("tag_name", "")
-        }
-
-        response_data = {
-            "general_info": general_info,
-            "channel_info": channel_info
-        }
-
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "success",
-                "message": f"DI Channel {channel} details retrieved successfully",
-                # "data": response_data
-                "general_info": general_info,
-                "channel_info": channel_info
-            }
-        )
-
-    except Exception as e:
-        return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
+    return {
+        "status": "success",
+        "device_id": device_id,
+        "sub_module_id": str(module_id),
+        "channel_key": found_key,
+        "channel": found_cfg,
+        "associateable_channels": associateable_channels,
+    }
 
 
-async def get_do_channel_detail(
-    request: Request,
-    frtuname: str = Query(...),
-    slotnumber: str = Query(...),
-    channel: str = Query(...),
-    authorization: str = Header(...),
-    settings: Settings = Depends(Settings.get_settings)
-):
+async def configure_module_ioa(
+    device_id: str,
+    device_type: str,
+    sub_module_id: UUID,
+    base_ioa: Optional[int] = None,
+    channels: Optional[List[Dict[str, str]]] = None,
+    # user_id: UUID,
+) -> Dict[str, Any]:
     try:
-        if not authorization or not authorization.startswith("Bearer "):
-            return JSONResponse(status_code=401, content={"status": "error", "message": "Invalid Authorization header"})
+        device_uuid = UUID(device_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid device_id format")
 
-        tenant_token = authorization.split(" ")[1]
-        try:
-            tenant_data = decode_token(tenant_token)
-        except Exception as e:
-            return JSONResponse(status_code=401, content={"status": "error", "message": f"Tenant token decode failed: {str(e)}"})
+    devices = await FRTUDevices.select(id=device_uuid)
+    if not devices:
+        raise HTTPException(status_code=400, detail="Invalid device_id")
+    dev = devices[0]
+    db_type = (
+        dev.type.name if hasattr(dev.type, "name")
+        else (dev.type.value if hasattr(dev.type, "value") else str(dev.type))
+    )
+    if db_type.strip().upper() != device_type.strip().upper():
+        raise HTTPException(status_code=400, detail="Device type does not match")
 
-        tenant_id_str = tenant_data.get("tenant_id")
-        if not tenant_id_str:
-            return JSONResponse(status_code=401, content={"status": "error", "message": "Invalid tenant token: tenant_id missing"})
+    mods = await FRTUModules.select(id=sub_module_id)
+    if not mods:
+        raise HTTPException(status_code=400, detail="Invalid sub_module_id")
+    m = mods[0]
+    module_id = m.id
+    slot_id = m.slot_id
+    channel_blob: Dict[str, Any] = dict(m.channel or {})
+    channels_map: Dict[str, Any] = dict(channel_blob.get("channels") or {})
 
-        try:
-            tenant_id = uuid.UUID(tenant_id_str)
-        except Exception as e:
-            return JSONResponse(status_code=400, content={"status": "error", "message": f"Invalid tenant_id in token: {str(e)}"})
+    slots = await FRTUSlots.select(id=slot_id, device_id=device_uuid)
+    if not slots:
+        raise HTTPException(status_code=400, detail="Module does not belong to this device")
 
-        try:
-            slotnumber = int(slotnumber)
-        except ValueError:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "slotnumber must be an integer"})
+    mtypes = await FRTUModuleType.select(id=m.module_type)
+    if not mtypes or mtypes[0].name.strip().upper() != "DI":
+        raise HTTPException(status_code=400, detail="Only DI modules supported")
 
-        if slotnumber < 4 or slotnumber > 11:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Can only get channel details for slots 4-11"})
+    attr: Dict[str, Any] = dict(m.attribute or {})
+    info_key = "module_di_info"
+    module_info = attr.get(info_key, {})
+    general_info = module_info.get("general_info", {})
+    slot_number = general_info.get("slot_number")
+    if not slot_number:
+        raise HTTPException(status_code=500, detail="slot_number not found")
 
-        channel_lower = channel.lower()
-        if not channel_lower.startswith("do_"):
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Channel must be in format 'do_X'"})
+    slot_num = int(slot_number)
+    calculated_base_ioa = 1000 + (slot_num - 4) * 400
+    final_base_ioa = base_ioa or calculated_base_ioa
 
-        try:
-            channel_number = int(channel_lower.split("_")[1])
-        except:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Invalid channel format"})
+    ioa_mapping = []
+    used_ioas = set()
 
-        if channel_number < 1 or channel_number > 10:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "DO channel must be between do_1 and do_10"})
+    for cfg in channels_map.values():
+        existing_ioa = cfg.get("ioa")
+        if existing_ioa and existing_ioa != "0":
+            used_ioas.add(existing_ioa)
 
-        projects = await FRTUProjects.select(tenant_id=tenant_id)
-        if not projects:
-            return JSONResponse(status_code=404, content={"status": "error", "message": "No projects found for this tenant"})
+    if channels:
+        for ch_data in channels:
+            ch_no = ch_data.get("channel_no")
+            ioa_val = ch_data.get("ioa")
+            
+            if not ch_no or not ioa_val:
+                continue
+                
+            ch_no_int = int(str(ch_no))
+            if not (1 <= ch_no_int <= 16):
+                continue
+                
+            key = f"channel_{ch_no_int}"
+            if key not in channels_map:
+                continue
+                
+            if ioa_val in used_ioas and ioa_val != channels_map[key].get("ioa"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"IOA {ioa_val} already used by another channel"
+                )
+                
+            channels_map[key]["ioa"] = ioa_val
+            ioa_mapping.append({"channel_no": str(ch_no_int), "ioa": ioa_val})
+            used_ioas.add(ioa_val)
 
-        project_ids = [p.id for p in projects]
-        sites = await FRTUSites.select(project_id=project_ids)
-        if not sites:
-            return JSONResponse(status_code=404, content={"status": "error", "message": "No sites found"})
+    else:  
+        for ch_no_int in range(1, 17):
+            key = f"channel_{ch_no_int}"
+            if key not in channels_map:
+                continue
+                
+            ioa_val = f"{final_base_ioa + ch_no_int - 1}"
+            
+            if ioa_val in used_ioas and ioa_val != channels_map[key].get("ioa"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Auto-generated IOA {ioa_val} conflicts with existing channel"
+                )
+                
+            channels_map[key]["ioa"] = ioa_val
+            ioa_mapping.append({"channel_no": str(ch_no_int), "ioa": ioa_val})
+            used_ioas.add(ioa_val)
 
-        site_ids = [s.id for s in sites]
-        devices = await FRTUDevices.select(name=frtuname, site_id=site_ids)
-        if not devices:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Device '{frtuname}' not found"})
+    channel_blob["channels"] = channels_map
+    await FRTUModules.update(
+        conditions={"id": module_id},
+        channel=channel_blob,
+    )
 
-        device = devices[0]
-        slots = await FRTUSlots.select(device_id=device.id)
-        if not slots or slotnumber > len(slots):
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Slot {slotnumber} not found"})
+    module_num = slot_num - 3
+    serial_channel = f"MODULE_{module_num}"
+    
+    dp_pairs_set = set()
+    for cfg in channels_map.values():
+        if cfg.get("channel_type") == "Double Point Parameter" and cfg.get("is_enabled"):
+            assoc_id = cfg.get("associate_channel_id")
+            if assoc_id:
+                assoc_ch = next((c for c in channels_map.values() if c.get("channel_id") == assoc_id), None)
+                if assoc_ch and assoc_ch.get("channel_type") == "Double Point Parameter":
+                    a, b = int(cfg["channel_no"]), int(assoc_ch["channel_no"])
+                    p1, p2 = (a, b) if a < b else (b, a)
+                    dp_pairs_set.add(f"{p1},{p2}")
+    
+    dp_pairs = sorted(dp_pairs_set, key=lambda x: int(x.split(",")[0]))
 
-        slot = slots[slotnumber - 1]
-        modules = await FRTUModules.select(slot_id=slot.id)
-        if not modules:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"No module found in slot {slotnumber}"})
+    from src.utils.ini_handler import regenerate_module_ini
+    regenerate_module_ini(
+        ini_path="rtu_config_iec104_di.ini",
+        # ini_path="di.ini",
+        serial_channel=serial_channel,
+        channels=channels_map,
+        dp_pairs=dp_pairs,
+    )
 
-        module = modules[0]
-        current_attr = module.get("attribute", {}) or {}
-        module_type = current_attr.get("module_type", "").upper()
-
-        if module_type != "DO":
-            return JSONResponse(status_code=400, content={"status": "error", "message": f"Slot {slotnumber} has {module_type} module, not DO"})
-
-        channel_data = module.get("channel", {}) or {}
-        devids_slot_no = slotnumber - 3
-        channel_key = f"channel_{devids_slot_no:02d}"
-
-        if channel_key not in channel_data:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"No channels configured in slot {slotnumber}"})
-
-        if channel_lower not in channel_data[channel_key]:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Channel '{channel_lower}' not configured yet"})
-
-        channel_config = channel_data[channel_key][channel_lower]
-
-        general_info = {
-            "id": channel_config.get("id", ""),
-            "name": channel_config.get("name", ""),
-            "description": channel_config.get("description", ""),
-            "pulse_time": channel_config.get("pulse_time", "")
-        }
-
-        channel_info = {
-            "channel_type": channel_config.get("channel_type", ""),
-            "DO_output": channel_config.get("DO_output", channel_lower),
-            "tag_name": channel_config.get("tag_name", "")
-        }
-
-        response_data = {
-            "general_info": general_info,
-            "channel_info": channel_info
-        }
-
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "success",
-                "message": f"DO Channel {channel} details retrieved successfully",
-                # "data": response_data
-                "general_info": general_info,
-                "channel_info": channel_info
-            }
-        )
-
-    except Exception as e:
-        return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
-
-
-async def get_all_channels_by_slot(
-    request: Request,
-    frtuname: str = Query(...),
-    slotnumber: str = Query(...),
-    authorization: str = Header(...),
-    settings: Settings = Depends(Settings.get_settings)
-):
-    try:
-        if not authorization or not authorization.startswith("Bearer "):
-            return JSONResponse(status_code=401, content={"status": "error", "message": "Invalid Authorization header"})
-
-        tenant_token = authorization.split(" ")[1]
-        try:
-            tenant_data = decode_token(tenant_token)
-        except Exception as e:
-            return JSONResponse(status_code=401, content={"status": "error", "message": f"Tenant token decode failed: {str(e)}"})
-
-        tenant_id_str = tenant_data.get("tenant_id")
-        if not tenant_id_str:
-            return JSONResponse(status_code=401, content={"status": "error", "message": "Invalid tenant token: tenant_id missing"})
-
-        try:
-            tenant_id = uuid.UUID(tenant_id_str)
-        except Exception as e:
-            return JSONResponse(status_code=400, content={"status": "error", "message": f"Invalid tenant_id in token: {str(e)}"})
-
-        try:
-            slotnumber = int(slotnumber)
-        except ValueError:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "slotnumber must be an integer"})
-
-        if slotnumber < 4 or slotnumber > 11:
-            return JSONResponse(status_code=400, content={"status": "error", "message": "Can only get channels for slots 4-11"})
-
-        projects = await FRTUProjects.select(tenant_id=tenant_id)
-        if not projects:
-            return JSONResponse(status_code=404, content={"status": "error", "message": "No projects found for this tenant"})
-
-        project_ids = [p.id for p in projects]
-        sites = await FRTUSites.select(project_id=project_ids)
-        if not sites:
-            return JSONResponse(status_code=404, content={"status": "error", "message": "No sites found"})
-
-        site_ids = [s.id for s in sites]
-        devices = await FRTUDevices.select(name=frtuname, site_id=site_ids)
-        if not devices:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Device '{frtuname}' not found"})
-
-        device = devices[0]
-        slots = await FRTUSlots.select(device_id=device.id)
-        if not slots or slotnumber > len(slots):
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"Slot {slotnumber} not found"})
-
-        slot = slots[slotnumber - 1]
-        modules = await FRTUModules.select(slot_id=slot.id)
-        if not modules:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"No module found in slot {slotnumber}"})
-
-        module = modules[0]
-        current_attr = module.get("attribute", {}) or {}
-        module_type = current_attr.get("module_type", "").upper()
-
-        channel_data = module.get("channel", {}) or {}
-        devids_slot_no = slotnumber - 3
-        channel_key = f"channel_{devids_slot_no:02d}"
-
-        if channel_key not in channel_data:
-            return JSONResponse(status_code=404, content={"status": "error", "message": f"No channels configured in slot {slotnumber}"})
-
-        serial_channel = f"SERIAL_CH{devids_slot_no:02d}"
-        
-        channels_list = []
-        for ch_name, ch_config in channel_data[channel_key].items():
-            if ch_name.startswith("di_") or ch_name.startswith("do_"):
-                channels_list.append({
-                    "channel_name": ch_name,
-                    "configuration": ch_config
-                })
-
-        response_data = {
-            "frtu_name": frtuname,
-            "slot_number": slotnumber,
-            "module_type": module_type,
-            "serial_channel": serial_channel,
-            "serialport": channel_data[channel_key].get("serialport", ""),
-            "deviceid": channel_data[channel_key].get("deviceid", ""),
-            "devicetype": channel_data[channel_key].get("devicetype", ""),
-            "status": channel_data[channel_key].get("status", ""),
-            "total_channels": len(channels_list),
-            "channels": channels_list
-        }
-
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "success",
-                "message": f"All channels for slot {slotnumber} retrieved successfully",
-                "data": response_data
-            }
-        )
-
-    except Exception as e:
-        return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
-
-
-
-
-
-
-
-
+    return {
+        "status": "success",
+        "message": f"Module IOA configured successfully. Base IOA: {final_base_ioa}",
+        "device_id": device_id,
+        "sub_module_id": str(module_id),
+        "slot_number": slot_number,
+        "base_ioa": str(final_base_ioa),
+        "ioa_mapping": ioa_mapping,
+    }
 

@@ -124,8 +124,52 @@ class FRTUClient:
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to update {module_type} INI file on FRTU: {str(e)}")
             raise Exception(f"Failed to update {module_type} INI file: {str(e)}")
+    
+    def update_di_module_ini(
+        self,
+        module_type: str,
+        serial_channel: str,
+        channel_key: str,
+        ioa: str,
+    ):
+        payload = {
+            "module_type": module_type,
+            "serial_channel": serial_channel,
+            "channel_key": channel_key,
+            "ioa": ioa,
+            "ts": "0",
+            "is_configure": "1",
+        }
+
+        response = requests.post(
+            f"{self.base_url}/api/config/ini/update",
+            json=payload,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return True
+    
+    def update_do_module_ini(
+        self,
+        serial_channel: str,
+        channel_key: str,
+        value: str,
+    ):
+        payload = {
+            "serial_channel": serial_channel,
+            "channel_key": channel_key,
+            "value": value,
+        }
+
+        response = requests.post(
+            f"{self.base_url}/api/config/ini/update-do",
+            json=payload,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return True
 
 
 # Initialize global FRTU client
-# frtu_client = FRTUClient(frtu_ip="10.150.3.173", frtu_port=8000)
 frtu_client = FRTUClient(frtu_ip="10.150.3.173", frtu_port=8000)
+# frtu_client = FRTUClient(frtu_ip="10.150.2.255", frtu_port=8000)
