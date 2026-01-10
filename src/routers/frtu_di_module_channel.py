@@ -40,14 +40,14 @@ async def api_get_di_channel(
     )
 
 
-@router.post("/configure_di_channel_info")
-async def api_configure_di_channel_info(
-    device_id: str = Query(...),
-    device_type: str = Query(...),
-    payload: ConfigureSingleDIChannelRequest = ...,
-    user_id: UUID = Depends(require_permission("edit", "MODULE")),
-):
-    return await configure_di_channel_info_func(device_id, device_type, payload, user_id)
+# @router.post("/configure_di_channel_info")
+# async def api_configure_di_channel_info(
+#     device_id: str = Query(...),
+#     device_type: str = Query(...),
+#     payload: ConfigureSingleDIChannelRequest = ...,
+#     user_id: UUID = Depends(require_permission("edit", "MODULE")),
+# ):
+#     return await configure_di_channel_info_func(device_id, device_type, payload, user_id)
 
 @router.get("/get_di_channel_info")
 async def api_get_di_channel_detail(

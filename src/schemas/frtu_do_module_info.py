@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, List, Literal
 
 IOActivationMode = Literal["0", "1", "2"]
-PulseType = Literal["0", "1", "2"]
+pulseType = Literal["0", "1", "2"]
 SBOFlag = Literal["0", "1"]
 NormalState = Literal["ON", "OFF"]
 
@@ -20,7 +20,7 @@ class DOChannel(BaseModel):
     ioActivationMode: IOActivationMode
     status: bool
     timestampEnable: bool
-    PulseType: PulseType
+    pulseType: pulseType
     sboFlag: SBOFlag
     channelType: Literal[
         "Single Point Parameter",

@@ -13,6 +13,7 @@ def update_di_ini_for_module(
     module_index = slot_number - 3
     serial_channel = f"MODULE_{module_index}"
 
+    # write all 16 channels
     for ch_no in range(1, 17):
         key = f"channel_{ch_no}"
         ch = channels.get(key, {})
@@ -25,12 +26,15 @@ def update_di_ini_for_module(
         value = f"{ioa},{ts},{enable},{sp_dp}"
 
         frtu_client.update_di_module_ini(
-            module_type="DI",
+            # module_type="DI",
             serial_channel=serial_channel,
             channel_key=str(ch_no),
             ioa=value,
+            # deviceid=device_id,
+            # devicetype="DI",
         )
 
+    # DP pairing
     dp_pairs = []
     visited = set()
 
@@ -68,13 +72,12 @@ def update_di_ini_for_module(
         serial_channel=serial_channel,
         channel_key="dp_conf",
         ioa="%".join(dp_pairs) if dp_pairs else "",
+        deviceid=device_id,
+        devicetype="DI",
     )
 
 
-def clear_di_ini_slot(
-    device_id: str,
-    slot_number: int,
-) -> None:
+def clear_di_ini_slot(device_id: str, slot_number: int) -> None:
     if slot_number < 4:
         return
 
@@ -82,7 +85,7 @@ def clear_di_ini_slot(
     serial_channel = f"MODULE_{module_index}"
 
     for ch_no in range(1, 17):
-        frtu_client.update_ini_file(
+        frtu_client.update_di_module_ini(
             module_type="DI",
             serial_channel=serial_channel,
             channel_key=str(ch_no),
@@ -91,11 +94,11 @@ def clear_di_ini_slot(
             devicetype="DI",
         )
 
-    frtu_client.update_ini_file(
+    frtu_client.update_di_module_ini(
         module_type="DI",
         serial_channel=serial_channel,
         channel_key="dp_conf",
-        ioa="0",
+        ioa="0,0,0,0",
         deviceid=device_id,
         devicetype="DI",
     )

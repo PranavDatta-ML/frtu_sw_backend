@@ -67,3 +67,19 @@ class GetDIModuleData(BaseModel):
     general_info: Optional[Dict[str, Any]] = None
     channels: Optional[List[ChannelInfo]] = Field(default_factory=list)
     configured_channels_count: int = 0
+
+class DIGeneralInfo(BaseModel):
+    card_type: str
+    name: str
+    description: str | None
+    serial_number: str
+    type: str
+    hardware_version: str
+    firmware_version: str
+class DIModulePayload(BaseModel):
+    module_id: UUID
+    module_type: str
+    slot_id: UUID
+    general_info: DIGeneralInfo
+    channels: list[ChannelInfo] | None = None
+

@@ -1,4 +1,3 @@
-
 from typing import Optional, Dict, Any, List
 import logging
 import requests # type: ignore
@@ -125,30 +124,48 @@ class FRTUClient:
             logger.error(f"Failed to update {module_type} INI file on FRTU: {str(e)}")
             raise Exception(f"Failed to update {module_type} INI file: {str(e)}")
     
+    # def update_di_module_ini(
+    #     self,
+    #     serial_channel: str,
+    #     channel_key: str,
+    #     value: str,
+    #     deviceid: str,
+    #     devicetype: str,
+    # ):
+    #     response = requests.post(
+    #         f"{self.base_url}/api/config/ini/update-di",
+    #         json={
+    #             "serial_channel": serial_channel,
+    #             "channel_key": channel_key,
+    #             "value": value,
+    #             "deviceid": deviceid,
+    #             "devicetype": devicetype,
+    #         },
+    #         timeout=10,
+    #     )
+    #     response.raise_for_status()
+
     def update_di_module_ini(
         self,
-        module_type: str,
         serial_channel: str,
         channel_key: str,
         ioa: str,
     ):
         payload = {
-            "module_type": module_type,
             "serial_channel": serial_channel,
             "channel_key": channel_key,
             "ioa": ioa,
-            "ts": "0",
-            "is_configure": "1",
         }
 
         response = requests.post(
-            f"{self.base_url}/api/config/ini/update",
+            f"{self.base_url}/api/config/ini/update-di",
             json=payload,
-            timeout=self.timeout,
+            timeout=5,
         )
+
         response.raise_for_status()
-        return True
-    
+        return response.json()
+
     def update_do_module_ini(
         self,
         serial_channel: str,

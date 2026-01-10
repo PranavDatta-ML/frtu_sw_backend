@@ -79,8 +79,8 @@ def enforce_do_rules(channels: dict) -> None:
             )
 
         # ---------- PARAMETER CONSISTENCY ----------
-        if ch.get("PulseType") != peer.get("PulseType"):
-            raise HTTPException(400, "DP channels must have same PulseType")
+        if ch.get("pulseType") != peer.get("pulseType"):
+            raise HTTPException(400, "DP channels must have same pulseType")
 
         if ch.get("sboFlag") != peer.get("sboFlag"):
             raise HTTPException(400, "DP channels must have same sboFlag")

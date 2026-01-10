@@ -15,7 +15,7 @@ from src.routers.frtu_slots import router as FRTUSlotRouter
 from src.routers.frtu_modules import router as FRTUModuleRouter
 from src.routers.frtu_di_module_info import router as FRTUDIModuleInfoRouter
 from src.routers.frtu_do_module_info import router as FRTUDOModuleInfoRouter
-from src.routers.frtu_modbus_rtu import router as FRTUModbusRTUInfoRouter
+# from src.routers.frtu_modbus_rtu import router as FRTUModbusRTUInfoRouter
 from src.routers.frtu_module_master import router as FRTUModuleMasterRouter
 from src.routers.frtu_auto_discover_module import router as FRTUModulesAutoDiscoverRouter
 from src.routers.frtu_modules_slot_detail import router as FRTUModulesSlotDetailRouter
@@ -52,7 +52,7 @@ def include_router(app):
     app.include_router(FRTUModuleRouter, prefix='')
     app.include_router(FRTUDIModuleInfoRouter, prefix='')
     app.include_router(FRTUDOModuleInfoRouter, prefix='')
-    app.include_router(FRTUModbusRTUInfoRouter, prefix='')
+    # app.include_router(FRTUModbusRTUInfoRouter, prefix='')
     app.include_router(FRTUModuleMasterRouter, prefix='')
     app.include_router(FRTUModulesAutoDiscoverRouter, prefix='')
     app.include_router(FRTUModulesSlotDetailRouter, prefix='')

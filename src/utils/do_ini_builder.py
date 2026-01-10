@@ -21,7 +21,7 @@ def update_do_ini_for_module(
         ioa = ch["ioa"]
         ts = "1" if ch["timestampEnable"] else "0"
         enable = "1" if ch["status"] else "0"
-        pulse = ch["PulseType"]
+        pulse = ch["pulseType"]
         sbo = ch["sboFlag"]
         single_double = "1" if ch["channelType"] == "Double Point Parameter" else "0"
 
