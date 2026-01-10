@@ -100,19 +100,16 @@ async def get_modbus_info(
     sub_module_id: UUID,
     user_id: UUID,
 ):
-    # -------- DEVICE VALIDATION --------
     devices = await FRTUDevices.select(id=device_id, device_type=device_type)
     if not devices:
         raise HTTPException(404, "Device not found")
 
-    # -------- MODULE VALIDATION --------
     modules = await FRTUModules.select(id=sub_module_id)
     if not modules:
         raise HTTPException(404, "Module not found")
 
     module = modules[0]
 
-    # -------- SLOT VALIDATION --------
     slots = await FRTUSlots.select(id=module.slot_id, device_id=device_id)
     if not slots:
         raise HTTPException(
@@ -120,7 +117,6 @@ async def get_modbus_info(
             "Module does not belong to the given device"
         )
 
-    # -------- RESPONSE --------
     return {
         "status": "success",
         "subModuleId": str(module.id),

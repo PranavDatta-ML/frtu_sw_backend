@@ -168,7 +168,13 @@ class FRTUClient:
         )
         response.raise_for_status()
         return True
+    def update_mb_config(frtu_ip: str, payload: dict):
+        url = f"http://{frtu_ip}:8000/api/config/modbus/update"
 
+        response = requests.post(url, json=payload, timeout=10)
+        response.raise_for_status()
+
+        return response.json()
 
 # Initialize global FRTU client
 frtu_client = FRTUClient(frtu_ip="10.150.3.173", frtu_port=8000)

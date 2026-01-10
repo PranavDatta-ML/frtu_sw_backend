@@ -4,13 +4,183 @@ from typing import Any, Dict, List
 from uuid import UUID, uuid4
 from fastapi import HTTPException
 from src.models.frtu_devices import FRTUDevices
+from src.models.frtu_module_master import FRTUModuleMaster
 from src.models.frtu_module_type import FRTUModuleType
 from src.models.frtu_modules import FRTUModules
 from src.models.frtu_slots import FRTUSlots
+from src.schemas.frtu_di_module_info import ChannelInfo, ChannelType, ConfigureDIModuleRequest, GetDIModuleData, GetDIModuleInfoResponse
 from src.utils.config_parser import update_devids_conf
 from src.utils.di_ini_builder import clear_di_ini_slot, update_di_ini_for_module
 from src.utils.frtu_client import frtu_client
 from src.validators.di_channel_validator import DP, SP, normalize_dp_associations, validate_di_channels, validate_di_channels_strict
+
+# ------------------------------------------add di module general info and channels working for sp ------------------------------------------
+# async def add_di_module_info(
+#     device_id: str,
+#     device_type: str,
+#     payload: ConfigureDIModuleRequest,
+#     user_id: UUID,
+# ) -> Dict[str, Any]:
+#     try:
+#         device_uuid = UUID(device_id)
+#     except Exception:
+#         raise HTTPException(status_code=400, detail="Invalid device_id format")
+
+#     devices = await FRTUDevices.select(id=device_uuid)
+#     if not devices:
+#         raise HTTPException(status_code=400, detail="Invalid device_id")
+#     device = devices[0]
+#     db_type = (
+#         device.type.name
+#         if hasattr(device.type, "name")
+#         else (device.type.value if hasattr(device.type, "value") else str(device.type))
+#     )
+#     if db_type.strip().upper() != device_type.strip().upper():
+#         raise HTTPException(status_code=400, detail="Device type does not match")
+
+#     requested_type = payload.module_type.strip().upper()
+#     if requested_type != "DI":
+#         raise HTTPException(status_code=400, detail="Only DI modules supported")
+
+#     masters = await FRTUModuleMaster.select(id=payload.module_id)
+#     if not masters:
+#         raise HTTPException(status_code=400, detail="Invalid module_id")
+#     master = masters[0]
+#     master_name = str(master.name).strip().upper()
+#     master_description = str(master.description) if getattr(master, "description", None) else ""
+
+#     if master_name != "DIGITAL INPUT":
+#         raise HTTPException(status_code=400, detail="module_type DI requires Digital Input module_id")
+
+#     slots = await FRTUSlots.select(id=payload.slot_id, device_id=device_uuid)
+#     if not slots:
+#         raise HTTPException(status_code=400, detail="slot_id does not belong to this device")
+#     slot = slots[0]
+#     try:
+#         slot_number = int(str(slot.name))
+#     except Exception:
+#         raise HTTPException(status_code=400, detail="Invalid slot name format")
+
+#     mtypes = await FRTUModuleType.select(name=requested_type)
+#     if not mtypes:
+#         raise HTTPException(status_code=400, detail="Invalid module_type")
+#     mtype = mtypes[0]
+
+#     existing_modules = await FRTUModules.select(slot_id=payload.slot_id)
+    
+#     info_key = "module_di_info"
+#     general_info = {}
+    
+#     if existing_modules:
+#         existing_module = existing_modules[0]
+#         existing_module_id = str(existing_module.id)
+#         if existing_module.attribute:
+#             existing_info = existing_module.attribute.get(info_key, {}).get("general_info", {})
+#             general_info = dict(existing_info)
+#     else:
+#         existing_module_id = None
+    
+#     if payload.general_info:
+#         for key, value in payload.general_info.items():
+#             general_info[key] = value
+    
+#     general_info["slot_number"] = slot_number
+#     general_info["slot_id"] = str(payload.slot_id)
+#     general_info["module_name"] = "Digital Input"
+#     general_info["module_type"] = requested_type
+
+#     module_info = {"general_info": general_info}
+#     attribute_blob = {
+#         "device_id": str(device_uuid),
+#         "slot_number": slot_number,
+#         info_key: module_info,
+#     }
+
+#     channel_blob: Dict[str, Any] = {"channels": {}}
+#     if existing_modules:
+#         existing_module = existing_modules[0]
+#         if existing_module.channel:
+#             channel_blob = dict(existing_module.channel)
+    
+#     if payload.channels:
+#         for ch in payload.channels:
+#             if not (1 <= int(ch.channelNoPrimary) <= 16):
+#                 continue
+#             ch_no = ch.channelNoPrimary
+#             key = f"channel_{ch_no}"
+#             ch_dict = ch.dict()
+#             ch_dict["channel_no"] = ch_no
+#             ch_dict["status"] = ch.status
+#             ch_dict["timestampEnable"] = ch.timestampEnable
+#             ch_dict["ioActivationMode"] = ch.ioActivationMode
+#             channel_blob["channels"][key] = ch_dict
+
+#     if payload.channels and not payload.general_info and not existing_modules:
+#         raise HTTPException(status_code=400, detail="General info must be configured first before channels")
+
+#     if existing_modules and payload.channels:
+#         existing_module = existing_modules[0]
+#         if not existing_module.attribute:
+#             raise HTTPException(status_code=400, detail="General info not configured for this module")
+#         if not existing_module.attribute.get(info_key, {}).get("general_info"):
+#             raise HTTPException(status_code=400, detail="General info not configured for this module")
+
+#     http_code: int
+#     message: str
+#     module_id_out: str
+#     channels_count: int
+
+#     if existing_modules:
+#         await FRTUModules.update(
+#             conditions={"id": existing_modules[0].id},
+#             name="Digital Input",
+#             module_type=mtype.id,
+#             description=master_description,
+#             attribute=attribute_blob,
+#             channel=channel_blob,
+#         )
+#         module_id_out = existing_module_id
+#         http_code = 200
+#         channels_count = len(channel_blob["channels"])
+#         message = f"DI module updated - General: {bool(payload.general_info)}, Channels: {len(payload.channels or [])}"
+#     else:
+#         placed = await FRTUModules.insert(
+#             slot_id=payload.slot_id,
+#             name="Digital Input",
+#             module_type=mtype.id,
+#             description=master_description,
+#             attribute=attribute_blob,
+#             channel=channel_blob if payload.channels else None,
+#         )
+#         module_id_out = str(placed.id)
+#         http_code = 201
+#         channels_count = len(channel_blob["channels"])
+#         message = f"DI module created - General: {bool(payload.general_info)}, Channels: {len(payload.channels or [])}"
+
+#     await asyncio.to_thread(
+#         frtu_client.update_devids_conf,
+#         slot_number,
+#         requested_type,
+#     )
+
+#     return {
+#         "status": "success",
+#         "http_code": http_code,
+#         "message": message,
+#         "data": {
+#             "module_id": module_id_out,
+#             "slot_id": str(payload.slot_id),
+#             "module_type": requested_type,
+#             "name": "Digital Input",
+#             "general_info": general_info,
+#             "configured_channels_count": channels_count,
+#             # "associateable_channels": [
+#             #     f"Ch{ch_no}: {ch.get('name', 'Unnamed')}" 
+#             #     for ch_no, ch in channel_blob["channels"].items() 
+#             #     if ch.get("is_enabled", False)
+#             # ]
+#         },
+#     }
 
 # ------------------------------------------add di module general info and channels working for sp and dp------------------------------------------
 async def add_di_module_info(
@@ -157,6 +327,7 @@ async def add_di_module_info(
             "configured_channels_count": len(temp_channels),
         },
     }
+
 
 async def edit_di_module_info(
     device_id: str,
@@ -439,3 +610,74 @@ async def get_di_module_info_by_slot_id(
             "configured_channels_count": channels_count,
         },
     }
+
+# ------------------------------------------get di module info by sub_module_id ------------------------------------------
+async def get_di_module_info(
+    device_id: str,
+    device_type: str,
+    sub_module_id: str,
+    user_id: UUID,
+) -> Dict[str, Any]:
+
+    try:
+        device_uuid = UUID(device_id)
+        module_uuid = UUID(sub_module_id)
+    except Exception:
+        raise HTTPException(400, "Invalid UUID format")
+
+    devices = await FRTUDevices.select(id=device_uuid)
+    if not devices:
+        raise HTTPException(404, "Device not found")
+
+    device = devices[0]
+    db_type = (
+        device.type.name
+        if hasattr(device.type, "name")
+        else str(device.type)
+    )
+
+    if db_type.upper() != device_type.upper():
+        raise HTTPException(400, "Device type does not match")
+
+    modules = await FRTUModules.select(id=module_uuid)
+    if not modules:
+        raise HTTPException(404, "Module not found")
+
+    module = modules[0]
+
+    slot = (await FRTUSlots.select(id=module.slot_id))[0]
+
+    attribute = module.attribute or {}
+    channel_blob = module.channel or {}
+
+    module_info = attribute.get("module_di_info", {})
+    general_info = module_info.get("general_info", {})
+
+    channels_dict = channel_blob.get("channels") or {}
+    channels_list = list(channels_dict.values())
+
+    sp_count = 0
+    dp_count = 0
+
+    for ch in channels_list:
+        if ch.get("channelType") == SP:
+            sp_count += 1
+        elif ch.get("channelType") == DP:
+            dp_count += 1
+
+    return {
+        "status": "success",
+        "http_code": 200,
+        "message": "DI module fetched successfully",
+        "sub_module_id": str(module.id),
+        "device_id": str(device_uuid),
+        "slot_id": str(slot.id),
+        "slot_number": int(slot.name),
+        "module_type": "DI",
+        "general_info": general_info,
+        "channels": channels_list,
+        "sp_channels_count": sp_count,
+        "dp_channels_count": dp_count,
+    }
+
+
