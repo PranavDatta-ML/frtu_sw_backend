@@ -234,7 +234,7 @@ async def get_slot_module_options(request: Request,frtuname: str = Query(...),fr
 
 
 # ------------------- Get Module Card types options ----------------
-async def get_card_type() -> Dict[str, Any]:
+async def get_card_type(user_id: UUID) -> Dict[str, Any]:
     card_types: List[str] = [c.value for c in FRTUDeviceCardType]
     return {
         "status": "success",

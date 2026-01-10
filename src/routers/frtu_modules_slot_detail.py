@@ -13,7 +13,7 @@ router = APIRouter(
 async def api_get_card_type(
     user_id: UUID = Depends(require_permission("view", "MODULE")),
 ):
-    return await get_card_type()
+    return await get_card_type(user_id=user_id)
 
 @router.get("/get_slot_module_detail")
 async def get_module_detail_by_slot(request: Request, frtuname, frtutype, slotnumber, authorization: str = Header(..., convert_underscores=False), settings: Settings = Depends(Settings.get_settings)):
