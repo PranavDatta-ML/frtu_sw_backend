@@ -23,14 +23,9 @@ async def api_add_modbus_module(
 
 @router.get("/get_modbus_info")
 async def api_get_modbus_info(
-    device_id: UUID = Query(...),
+    device_id: str = Query(...),
     device_type: str = Query(...),
     sub_module_id: UUID = Query(...),
-    user_id: UUID = Depends(require_permission("view", "MODULE")),
+    user_id: UUID = Depends(require_permission("view", "MODULE")),  # MOVED LAST
 ):
-    return await get_modbus_info(
-        device_id=device_id,
-        device_type=device_type,
-        sub_module_id=sub_module_id,
-        user_id=user_id,
-    )
+    return await get_modbus_info(device_id, device_type,sub_module_id, user_id)

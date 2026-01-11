@@ -8,6 +8,7 @@ class ChannelType(str, enum.Enum):
     DOUBLE_POINT_PARAMETER = "Double Point Parameter"
 
 class ChannelInfo(BaseModel):
+    channelId: Optional[str] = ""
     channelNoPrimary: str
     name: str
     description: str

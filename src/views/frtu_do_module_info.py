@@ -19,7 +19,7 @@ async def add_do_module_info(
     device_type: str,
     payload: DOModulePayload,
     user_id: UUID,
-):
+    ):
     device_uuid = UUID(device_id)
     device = (await FRTUDevices.select(id=device_uuid))[0]
 
@@ -113,8 +113,7 @@ async def get_do_module_info(
     device_type: str,
     sub_module_id: str,
     user_id: UUID,
-) -> Dict[str, Any]:
-
+    ) -> Dict[str, Any]:
     try:
         device_uuid = UUID(device_id)
         module_uuid = UUID(sub_module_id)
@@ -127,9 +126,8 @@ async def get_do_module_info(
 
     device = devices[0]
     db_type = device.type.name if hasattr(device.type, "name") else str(device.type)
-
-    if db_type.upper() != device_type.upper():
-        raise HTTPException(400, "Device type mismatch")
+    if db_type.strip().upper() != device_type.strip().upper():
+        raise HTTPException(400, "Device type does not match")
 
     modules = await FRTUModules.select(id=module_uuid)
     if not modules:
@@ -137,39 +135,58 @@ async def get_do_module_info(
 
     module = modules[0]
 
-    slots = await FRTUSlots.select(
+    slot = await FRTUSlots.select(
         id=module.slot_id,
-        device_id=device_uuid
+        device_id=device_uuid,
     )
-    if not slots:
+    if not slot:
         raise HTTPException(403, "Module does not belong to this device")
 
-    slot = slots[0]
+    module_type = (await FRTUModuleType.select(id=module.module_type))[0]
+    if module_type.name.strip().upper() != "DO":
+        raise HTTPException(
+            status_code=400,
+            detail="This API supports only DO modules. Use appropriate endpoint for other module types."
+        )
 
-    module_types = await FRTUModuleType.select(id=module.module_type)
-    if not module_types or module_types[0].name.upper() != "DO":
-        raise HTTPException(400, "Only DO modules are allowed")
+    slot = slot[0]
 
     attribute = module.attribute or {}
     channel_blob = module.channel or {}
 
     module_info = attribute.get("module_do_info", {})
-    general_info = module_info.get("general_info", {}) or {}
+    general_info = module_info.get("general_info", {})
 
     channels_dict = channel_blob.get("channels") or {}
-    unique_channels = {}
-    for ch in channels_dict.values():
-        unique_channels[ch["channelNo"]] = ch
 
-    channels_list = list(unique_channels.values())
-
+    channels_list = []
     sp_count = 0
     dp_count = 0
-    for ch in channels_list:
-        if ch.get("channelType") == "Single Point Parameter":
+    visited_pairs = set()
+
+    for ch in channels_dict.values():
+        ch_copy = dict(ch)
+
+        if "associateChannelNo" in ch_copy:
+            ch_copy["associateChannelNo"] = ch_copy.pop("associateChannelNo")
+
+        if "channel_id" in ch_copy:
+            ch_copy["channelId"] = ch_copy.pop("channel_id")
+
+        ch_type = ch_copy.get("channelType")
+        if ch_type == "Single Point Parameter":
             sp_count += 1
-        elif ch.get("channelType") == "Double Point Parameter":
-            dp_count += 1
+        elif ch_type == "Double Point Parameter":
+            assoc = ch_copy.get("associateChannelNo")
+            if assoc:
+                pair_key = tuple(sorted([ch_copy["channelNo"], assoc]))
+                if pair_key not in visited_pairs:
+                    dp_count += 1
+                    visited_pairs.add(pair_key)
+
+        channels_list.append(ch_copy)
+
+    channels_list.sort(key=lambda x: int(x["channelNo"]))
 
     return {
         "status": "success",
@@ -192,7 +209,7 @@ async def edit_do_module_info(
     device_type: str,
     payload: dict,
     user_id: UUID,
-):
+    ):
     try:
         device_uuid = UUID(device_id)
         sub_module_id = UUID(payload["sub_module_id"])
