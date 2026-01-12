@@ -5,7 +5,7 @@ import requests # type: ignore
 logger = logging.getLogger(__name__)
 
 class FRTUClient:
-    def __init__(self, frtu_ip: str = "10.150.3.173", frtu_port: int = 8000, timeout: int = 10):
+    def __init__(self, frtu_ip: str = "127.0.0.1", frtu_port: int = 8000, timeout: int = 10):
         self.base_url = f"http://{frtu_ip}:{frtu_port}"
         self.timeout = timeout
         self.frtu_ip = frtu_ip
@@ -113,7 +113,13 @@ class FRTUClient:
                 json=payload, 
                 timeout=self.timeout
             )
-            response.raise_for_status()
+            if response.status_code >= 400:
+                try:
+                    body = response.json()
+                except Exception:
+                    body = response.text
+                raise Exception(f"INI update failed ({response.status_code}): {body}")
+            # response.raise_for_status()
             result = response.json()
             
             if result.get("status") == "success":
@@ -124,54 +130,34 @@ class FRTUClient:
             logger.error(f"Failed to update {module_type} INI file on FRTU: {str(e)}")
             raise Exception(f"Failed to update {module_type} INI file: {str(e)}")
     
+
     # def update_di_module_ini(
     #     self,
     #     serial_channel: str,
     #     channel_key: str,
-    #     value: str,
-    #     deviceid: str,
-    #     devicetype: str,
-    # ):
+    #     ioa: str,
+    #     ):
+    #     payload = {
+    #         "serial_channel": serial_channel,
+    #         "channel_key": channel_key,
+    #         "ioa": ioa,
+    #     }
+
     #     response = requests.post(
     #         f"{self.base_url}/api/config/ini/update-di",
-    #         json={
-    #             "serial_channel": serial_channel,
-    #             "channel_key": channel_key,
-    #             "value": value,
-    #             "deviceid": deviceid,
-    #             "devicetype": devicetype,
-    #         },
-    #         timeout=10,
+    #         json=payload,
+    #         timeout=5,
     #     )
+
     #     response.raise_for_status()
-
-    def update_di_module_ini(
-        self,
-        serial_channel: str,
-        channel_key: str,
-        ioa: str,
-    ):
-        payload = {
-            "serial_channel": serial_channel,
-            "channel_key": channel_key,
-            "ioa": ioa,
-        }
-
-        response = requests.post(
-            f"{self.base_url}/api/config/ini/update-di",
-            json=payload,
-            timeout=5,
-        )
-
-        response.raise_for_status()
-        return response.json()
-
+    #     return response.json()
+        
     def update_do_module_ini(
         self,
         serial_channel: str,
         channel_key: str,
         value: str,
-    ):
+        ):
         payload = {
             "serial_channel": serial_channel,
             "channel_key": channel_key,
@@ -185,14 +171,30 @@ class FRTUClient:
         )
         response.raise_for_status()
         return True
-    def update_mb_config(frtu_ip: str, payload: dict):
-        url = f"http://{frtu_ip}:8000/api/config/modbus/update"
+    
+    def update_mb_config(self, payload: dict) -> bool:
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/config/modbus/update",
+                # json=payload,
+                json={"slot_number": 3, "modbus_data": payload},
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            result = response.json()
+            return result.get("status") == "success"
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to update mb_config.ini: {str(e)}")
+            raise Exception(f"FRTU mb_config update failed: {str(e)}")
+    
+    # def update_mb_config(frtu_ip: str, payload: dict):
+    #     url = f"http://{frtu_ip}:8000/api/config/modbus/update"
 
-        response = requests.post(url, json=payload, timeout=10)
-        response.raise_for_status()
+    #     response = requests.post(url, json=payload, timeout=10)
+    #     response.raise_for_status()
 
-        return response.json()
+    #     return response.json()
 
 # Initialize global FRTU client
-frtu_client = FRTUClient(frtu_ip="10.150.3.173", frtu_port=8000)
-# frtu_client = FRTUClient(frtu_ip="10.150.2.255", frtu_port=8000)
+# frtu_client = FRTUClient(frtu_ip="10.150.3.173", frtu_port=8000)
+frtu_client = FRTUClient(frtu_ip="127.0.0.1", frtu_port=8000)

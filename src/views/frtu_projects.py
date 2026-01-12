@@ -341,9 +341,9 @@ async def delete_project_by_id(data: FRTUProjectDeleteByID, user_id: UUID, confi
 
     tenant_id = tenant_list[0].id
 
-    project_rows = await FRTUProjects.select(id=project_id, tenant_id=tenant_id)
-    if not project_rows:
-        return HttpStatusCode.NOT_FOUND.response("Project not found under this tenant")
+    # project_rows = await FRTUProjects.select(id=project_id, tenant_id=tenant_id)
+    # if not project_rows:
+    #     return HttpStatusCode.NOT_FOUND.response("Project not found under this tenant")
 
     children = await FRTUSites.select(project_id=project_id)
     if children:
@@ -358,7 +358,7 @@ async def delete_project_by_id(data: FRTUProjectDeleteByID, user_id: UUID, confi
     if not confirm_delete:
         return HttpStatusCode.OK.response(
             message="Project has no sites; deletion not confirmed",
-            data={"is_deleted": False},
+            data={"is_deleted": True},
         )
 
     try:

@@ -23,6 +23,7 @@ class ModbusSlaveConfig(BaseModel):
     description: Optional[str]
     sid: str
     slaveName: Optional[str]
+    pollInterval: Optional[str]
     accessToken: Optional[str]
     maxParameters: str
     modbusParameters: List[ModbusParameter]
@@ -33,6 +34,7 @@ class ModbusSlave(BaseModel):
     slaveConfig: ModbusSlaveConfig
 
 class ModbusChannelConfig(BaseModel):
+    channelNo: str
     channelName: str
     description: Optional[str]
     serialPort: str
@@ -67,5 +69,7 @@ class ModbusCategoryInfo(BaseModel):
     channels: List[ModbusChannel]
 
 class ModbusPayload(BaseModel):
+    moduleId: str
+    moduleType: str
     slotInfo: SlotInfo
     categoryInfo: ModbusCategoryInfo
