@@ -335,7 +335,10 @@ async def get_device_modules(
         )
 
     slot_ids = [s.id for s in slots]
-    modules: List[FRTUModules] = await FRTUModules.select(slot_id=slot_ids)
+    
+    all_modules = await FRTUModules.select()
+    modules: List[FRTUModules] = [m for m in all_modules if m.slot_id in slot_ids]
+    
     if not modules:
         return DeviceModulesResponse(
             status="success",
@@ -344,114 +347,79 @@ async def get_device_modules(
             is_auto=is_auto,
             modules=[],
         )
-    module_type_ids = [m.module_type for m in modules]
+
+    module_type_ids = list(set([m.module_type for m in modules]))
     types = await FRTUModuleType.select(id=module_type_ids) if module_type_ids else []
     type_by_id = {t.id: t for t in types}
 
-    if is_auto is not None:
-        filtered: List[FRTUModules] = []
-        for m in modules:
-            t = type_by_id.get(m.module_type)
-            type_name = t.name if t else None
-            if not type_name:
-                continue
-
-            upper_type = type_name.strip().upper()
-            if upper_type in ("PS", "SOM", "COM"):
-                filtered.append(m)
-                continue
-            # attr = m.attribute or {}
-            # raw_flag = attr.get("is_auto")
-            # flag = True if raw_flag is None else bool(raw_flag)
-
-            # if is_auto is True:
-            #     if flag is True:
-            #         filtered.append(m)
-            # else: 
-            #     if flag is False:
-            #         filtered.append(m)
-            if is_auto is False and upper_type in ("DI", "DO"):
-                filtered.append(m)
-
-        modules = filtered
-        if not modules:
-            return DeviceModulesResponse(
-                status="success",
-                device_id=device_uuid,
-                device_type=device_type,
-                is_auto=is_auto,
-                modules=[],
-            )
     masters = await FRTUModuleMaster.select()
     master_by_name = {mm.name.strip().upper(): mm for mm in masters}
     di_master = master_by_name.get("DIGITAL INPUT")
     do_master = master_by_name.get("DIGITAL OUTPUT")
 
-    flat_modules: List[Dict[str, Any]] = []
-    di_raw: List[FRTUModules] = []
-    do_raw: List[FRTUModules] = []
+    ps_som_com_modules = []
+    di_modules = []
+    do_modules = []
 
     for m in modules:
         t = type_by_id.get(m.module_type)
-        type_name = t.name if t else None
-        if not type_name:
-            continue
+        type_name = t.name.strip().upper() if t else ""
+        
+        if type_name in ["PS", "SOM", "COM"]:
+            ps_som_com_modules.append({
+                "slot_id": str(m.slot_id),
+                "module_id": str(m.id),
+                "module_type": type_name,
+                "module_name": {
+                    "PS": "Power Supply",
+                    "SOM": "Master Processor",
+                    "COM": "Communication"
+                }.get(type_name, m.name or type_name),
+            })
+        elif type_name == "DI":
+            di_modules.append(m)
+        elif type_name == "DO":
+            do_modules.append(m)
 
-        upper_type = type_name.strip().upper()
-        module_name = m.name
+    # ✅ FIXED LOGIC: Different responses based on is_auto
+    modules_list = []
 
-        if upper_type in ["PS", "SOM", "COM"]:
-            flat_modules.append(
+    # ALWAYS include PS/SOM/COM (both true/false)
+    modules_list.extend(ps_som_com_modules)
+
+    if is_auto is True:
+        # ONLY PS/SOM/COM - NO DI/DO
+        pass
+    else:  # is_auto=False or None
+        # ADD DI grouped (show even if empty)
+        modules_list.append({
+            "module_name": "Digital Input",
+            "module_type": "DI",
+            "module_id": str(di_master.id) if di_master else "",
+            "di_modules": [
                 {
                     "slot_id": str(m.slot_id),
-                    "module_id": str(m.id),  # frtu_modules.id
-                    "module_type": upper_type,
-                    "module_name": module_name,
+                    "di_module_id": str(m.id),
+                    "module_name": _get_display_name(m, "DI", idx + 1),
                 }
-            )
-        elif upper_type == "DI":
-            di_raw.append(m)
-        elif upper_type == "DO":
-            do_raw.append(m)
+                for idx, m in enumerate(di_modules)
+            ]
+        })
 
-    modules_list: List[Dict[str, Any]] = []
-    modules_list.extend(flat_modules)
-
-    if di_raw:
-        modules_list.append(
-            {
-                "module_name": "Digital Input",
-                "module_type": "DI",
-                "module_id": str(di_master.id) if di_master else "",
-                "di_modules": [
-                    {
-                        "slot_id": str(m.slot_id),
-                        "di_module_id": str(m.id),  # frtu_modules.id
-                        # "module_name": f"Digital Input {idx}",
-                        "module_name": _get_display_name(m, "DI", idx),
-                    }
-                    for idx, m in enumerate(di_raw, start=1)
-                ],
-            }
-        )
-
-    if do_raw:
-        modules_list.append(
-            {
-                "module_name": "Digital Output",
-                "module_type": "DO",
-                "module_id": str(do_master.id) if do_master else "",
-                "do_modules": [
-                    {
-                        "slot_id": str(m.slot_id),
-                        "do_module_id": str(m.id),  # frtu_modules.id
-                        # "module_name": f"Digital Output {idx}",
-                        "module_name": _get_display_name(m, "DO", idx),
-                    }
-                    for idx, m in enumerate(do_raw, start=1)
-                ],
-            }
-        )
+        # ADD DO grouped (show even if empty)
+        modules_list.append({
+            "module_name": "Digital Output",
+            "module_type": "DO",
+            "module_id": str(do_master.id) if do_master else "",
+            "do_modules": [
+                {
+                    "slot_id": str(m.slot_id),
+                    "do_module_id": str(m.id),
+                    "module_name": _get_display_name(m, "DO", idx + 1),
+                }
+                for idx, m in enumerate(do_modules)
+            ]
+        })
 
     return DeviceModulesResponse(
         status="success",
@@ -460,6 +428,8 @@ async def get_device_modules(
         is_auto=is_auto,
         modules=modules_list,
     )
+
+
 
 # ------------------- Configure Module Manually in Slot ----------------
 FIXED_MASTER_SLOTS = {
