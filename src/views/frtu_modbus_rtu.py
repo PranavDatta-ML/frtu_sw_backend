@@ -83,32 +83,71 @@ async def add_or_update_modbus_module(device_id: str, device_type: str, payload:
 
     return {"status": "success", "moduleId": str(module_id)}
 
-async def get_modbus_info(device_id: str, device_type: str, sub_module_id: UUID, user_id: UUID):
+from uuid import UUID
+from fastapi import HTTPException
+from src.models.frtu_devices import FRTUDevices
+from src.models.frtu_modules import FRTUModules
+from src.models.frtu_module_type import FRTUModuleType
+from src.models.frtu_slots import FRTUSlots
+
+
+async def get_modbus_module_info(
+    device_id: str,
+    device_type: str,
+    sub_module_id: str | None,
+    slot_id: str | None,
+    user_id,
+):
     device_uuid = UUID(device_id)
-    
+
     device = (await FRTUDevices.select(id=device_uuid))[0]
-    if device.type.name.strip().upper() != device_type.strip().upper():
+    db_type = device.type.name if hasattr(device.type, "name") else str(device.type)
+
+    if db_type.upper() != device_type.upper():
         raise HTTPException(400, "Device type mismatch")
 
-    modules = await FRTUModules.select(id=sub_module_id)
-    if not modules:
-        raise HTTPException(404, "Modbus module not found")
+    if not sub_module_id and not slot_id:
+        raise HTTPException(400, "sub_module_id or slot_id is required")
 
-    module = modules[0]
+    module = None
 
-    slots = await FRTUSlots.select(id=module.slot_id, device_id=device_uuid)
-    if not slots:
-        raise HTTPException(403, "Module does not belong to this device")
+    if sub_module_id:
+        modules = await FRTUModules.select(id=UUID(sub_module_id))
+        if not modules:
+            raise HTTPException(404, "Modbus module not found")
+        module = modules[0]
+
+    elif slot_id:
+        modules = await FRTUModules.select(slot_id=UUID(slot_id))
+        if not modules:
+            raise HTTPException(404, "No module found in slot")
+        module = modules[0]
+
+    # module_type = (await FRTUModuleType.select(id=module.module_type))[0]
+    # if module_type.name.upper() != "MODBUS":
+    #     raise HTTPException(400, "Module is not Modbus")
+
+    slot = (await FRTUSlots.select(id=module.slot_id))[0]
+
+    attribute = module.attribute or {}
+    channel_data = module.channel or {}
 
     return {
         "status": "success",
-        "moduleId": str(module.id),
-        "moduleType": "COM",
-        "slotId": str(module.slot_id),
-        "slotNumber": slots[0].name,
-        "attribute": module.attribute,
-        "channels": module.channel.get("channels", []),
-        "channelsCount": len(module.channel.get("channels", []))
+        "http_code": 200,
+        "message": "Modbus module fetched successfully",
+        "data": {
+            "module_id": str(module.id),
+            "device_id": device_id,
+            "slot_id": str(slot.id),
+            "slot_number": slot.name,
+            # "module_type": module_type.name,
+            "slotInfo": attribute.get("slotInfo"),
+            "categoryInfo": {
+                **attribute.get("modbusCategoryInfo", {}),
+                "channels": channel_data.get("channels", []),
+            },
+        },
     }
 
 
