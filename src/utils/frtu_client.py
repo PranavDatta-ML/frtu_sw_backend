@@ -5,7 +5,7 @@ import requests # type: ignore
 logger = logging.getLogger(__name__)
 
 class FRTUClient:
-    def __init__(self, frtu_ip: str = "10.150.3.173", frtu_port: int = 8000, timeout: int = 10):
+    def __init__(self, frtu_ip: str = "10.150.3.9", frtu_port: int = 8000, timeout: int = 10):
         self.base_url = f"http://{frtu_ip}:{frtu_port}"
         self.timeout = timeout
         self.frtu_ip = frtu_ip
@@ -54,6 +54,15 @@ class FRTUClient:
             logger.error(f"Failed to update devids.conf on FRTU: {str(e)}")
             raise Exception(f"Failed to update devids.conf: {str(e)}")
     
+    def remove_devids_slot(self, slot_number: int) -> bool:
+        response = requests.post(
+            f"{self.base_url}/api/config/devids/remove",
+            json={"slot_number": slot_number},
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return True
+
     def parse_version_conf(self) -> Dict[int, Dict[str, str]]:
         try:
             response = requests.get(f"{self.base_url}/api/config/version", timeout=self.timeout)
@@ -196,5 +205,5 @@ class FRTUClient:
     #     return response.json()
 
 # Initialize global FRTU client
-frtu_client = FRTUClient(frtu_ip="10.150.3.173", frtu_port=8000)
+frtu_client = FRTUClient(frtu_ip="10.150.3.9", frtu_port=8000)
 # frtu_client = FRTUClient(frtu_ip="127.0.0.1", frtu_port=8000)

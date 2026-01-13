@@ -166,4 +166,24 @@ def normalize_do_channel(ch) -> dict:
     data["channelNo"] = ch_no
     return data
 
+# def normalize_do_channel(ch) -> dict:
+#     if isinstance(ch, dict):
+#         ch_no = str(int(ch["channelNoPrimary"]))
+#         return {
+#             **ch,
+#             "description": ch.get("description") or "",
+#             "alarmCategory": ch.get("alarmCategory") or "",
+#             "associateChannelNo": ch.get("associateChannelNo"),
+#             "channelNo": ch_no,
+#         }
+
+#     ch_no = str(int(ch.channelNoPrimary))
+#     data = ch.model_dump(exclude={"associateChannelNo"})
+
+#     data["description"] = data.get("description") or ""
+#     data["alarmCategory"] = data.get("alarmCategory") or ""
+#     data["associateChannelNo"] = ch.associateChannelNo
+#     data["channelNo"] = ch_no
+
+#     return data
 

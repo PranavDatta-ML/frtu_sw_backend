@@ -240,13 +240,43 @@ async def auto_discover_modules(payload: AutoDiscoverRequest, user_id: UUID):
         )
         existing_keys.add((3, "COM"))
 
+    # for m in devids:
+    #     slot_no = int(m.get("slot_no", 0))
+    #     type_flag = int(m.get("type_flag", 0))
+    #     if not (1 <= slot_no <= 8):
+    #         continue
+
+    #     logical_slot = slot_no + 3
     for m in devids:
-        slot_no = int(m.get("slot_no", 0))
-        type_flag = int(m.get("type_flag", 0))
-        if not (1 <= slot_no <= 8):
+        logical_slot = int(m["slot"])          # already 4–11
+        type_flag = int(m["module_type"])      # 1 = DI, 2 = DO
+
+        slot_id = slot_by_number.get(logical_slot)
+        if not slot_id:
             continue
 
-        logical_slot = slot_no + 3
+        module_key = (logical_slot, "DI" if type_flag == 1 else "DO")
+        desired_di_do.add(module_key)
+
+        if type_flag == 1 and should_insert(logical_slot, "DI"):
+            await _insert_module(
+                device_id=device_id,
+                slot_id=slot_id,
+                logical_slot=logical_slot,
+                module_type_code="DI",
+                name="Digital Input",
+            )
+            existing_keys.add((logical_slot, "DI"))
+
+        elif type_flag == 2 and should_insert(logical_slot, "DO"):
+            await _insert_module(
+                device_id=device_id,
+                slot_id=slot_id,
+                logical_slot=logical_slot,
+                module_type_code="DO",
+                name="Digital Output",
+            )
+            existing_keys.add((logical_slot, "DO"))
         slot_id = slot_by_number.get(logical_slot)
         if not slot_id:
             continue
