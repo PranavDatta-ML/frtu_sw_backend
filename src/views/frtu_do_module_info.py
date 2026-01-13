@@ -176,12 +176,18 @@ async def add_do_module_info(
 
             existing = channels.get(key, {})
 
-            norm["channelId"] = (
-                ch.channelId
-                if hasattr(ch, "channelId") and ch.channelId
-                else existing.get("channelId")
-                or str(uuid4())
-            )
+            # norm["channelId"] = (
+            #     ch.channelId
+            #     if hasattr(ch, "channelId") and ch.channelId
+            #     else existing.get("channelId")
+            #     or str(uuid4())
+            # )
+            if hasattr(ch, "channelId"):
+                norm["channelId"] = ch.channelId
+            elif "channelId" in existing:
+                norm["channelId"] = existing.get("channelId", "")
+            else:
+                norm["channelId"] = ""
 
             channels[key] = {
                 **existing,
@@ -194,13 +200,14 @@ async def add_do_module_info(
 
     channel_blob["channels"] = channels
 
+    # module_id = existing_module.id
     if existing_module:
+        module_id = str(existing_module.id)
         await FRTUModules.update(
             conditions={"id": existing_module.id},
             attribute=attribute,
             channel=channel_blob,
         )
-        module_id = existing_module.id
     else:
         obj = await FRTUModules.insert(
             slot_id=payload.slot_id,

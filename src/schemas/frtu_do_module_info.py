@@ -13,6 +13,7 @@ NormalState = Literal["ON", "OFF"]
 #     DOUBLE_POINT_PARAMETER = "Double Point Parameter"
 
 class DOChannel(BaseModel):
+    channelId: Optional[str] = ""
     channelNoPrimary: str
     name: str
     description: Optional[str] = None
@@ -38,7 +39,7 @@ class DOChannel(BaseModel):
     equipmentName: Optional[str] = None
     scadaPointType: Optional[str] = None
     grouping: Optional[str] = None
-    alarmCategory: Optional[str] = None
+    # alarmCategory: Optional[str] = None
     commandConfigurationSource: Optional[str] = None
 
 
