@@ -17,7 +17,7 @@ from src.models.frtu_sites import FRTUSites
 from src.models.frtu_slots import FRTUSlots
 from src.schemas.frtu_manual_module import ConfigureModuleManuallyRequest, GetConfiguredModuleResponse
 from src.schemas.frtu_modules import AddModuleAutoRequest, AddModuleManuallyRequest, DeviceModuleItem, DeviceModulesResponse
-from src.services.modules import _get_display_name
+from src.services.modules import _get_display_name, _get_module_type_id
 from src.utils import frtu_client
 from src.utils.access_token import decode_token
 from src.utils.config_parser import  update_version_conf
@@ -298,11 +298,271 @@ async def add_module_manually(
     }
 
 # ----------------- get modules list using payload module_id and module_type --------------
-async def get_device_modules(
-    device_id: str,
-    device_type: str,
-    is_auto: bool | None,
-) -> DeviceModulesResponse:
+# async def get_device_modules(
+#     device_id: str,
+#     device_type: str,
+#     is_auto: bool | None,
+# ) -> DeviceModulesResponse:
+#     try:
+#         device_uuid = UUID(device_id)
+#     except Exception:
+#         raise HTTPException(status_code=400, detail="Invalid device_id format")
+
+#     devices = await FRTUDevices.select(id=device_uuid)
+#     if not devices:
+#         raise HTTPException(status_code=400, detail="Invalid device_id")
+#     device = devices[0]
+
+#     db_type = (
+#         device.type.name
+#         if hasattr(device.type, "name")
+#         else (device.type.value if hasattr(device.type, "value") else str(device.type))
+#     )
+#     if db_type.strip().upper() != device_type.strip().upper():
+#         raise HTTPException(
+#             status_code=400,
+#             detail="Device type does not match for this device_id",
+#         )
+
+#     slots: List[FRTUSlots] = await FRTUSlots.select(device_id=device_uuid)
+#     if not slots:
+#         return DeviceModulesResponse(
+#             status="success",
+#             device_id=device_uuid,
+#             device_type=device_type,
+#             is_auto=is_auto,
+#             modules=[],
+#         )
+
+#     slot_ids = [s.id for s in slots]
+    
+#     all_modules = await FRTUModules.select()
+#     modules: List[FRTUModules] = [m for m in all_modules if m.slot_id in slot_ids]
+    
+#     if not modules:
+#         return DeviceModulesResponse(
+#             status="success",
+#             device_id=device_uuid,
+#             device_type=device_type,
+#             is_auto=is_auto,
+#             modules=[],
+#         )
+
+#     module_type_ids = list(set([m.module_type for m in modules]))
+#     types = await FRTUModuleType.select(id=module_type_ids) if module_type_ids else []
+#     type_by_id = {t.id: t for t in types}
+
+#     masters = await FRTUModuleMaster.select()
+#     master_by_name = {mm.name.strip().upper(): mm for mm in masters}
+#     di_master = master_by_name.get("DIGITAL INPUT")
+#     do_master = master_by_name.get("DIGITAL OUTPUT")
+
+#     ps_som_com_modules = []
+#     di_modules = []
+#     do_modules = []
+
+#     for m in modules:
+#         t = type_by_id.get(m.module_type)
+#         type_name = t.name.strip().upper() if t else ""
+        
+#         if type_name in ["PS", "SOM", "COM"]:
+#             ps_som_com_modules.append({
+#                 "slot_id": str(m.slot_id),
+#                 "module_id": str(m.id),
+#                 "module_type": type_name,
+#                 "module_name": {
+#                     "PS": "Power Supply",
+#                     "SOM": "Master Processor",
+#                     "COM": "Communication"
+#                 }.get(type_name, m.name or type_name),
+#             })
+#         elif type_name == "DI":
+#             di_modules.append(m)
+#         elif type_name == "DO":
+#             do_modules.append(m)
+
+#     modules_list = []
+
+#     # ALWAYS include PS/SOM/COM (both true/false)
+#     modules_list.extend(ps_som_com_modules)
+
+#     if is_auto is True:
+#         # ONLY PS/SOM/COM - NO DI/DO
+#         pass
+#     else:  # is_auto=False or None
+#         # ADD DI grouped (show even if empty)
+#         modules_list.append({
+#             "module_name": "Digital Input",
+#             "module_type": "DI",
+#             "module_id": str(di_master.id) if di_master else "",
+#             "di_modules": [
+#                 {
+#                     "slot_id": str(m.slot_id),
+#                     "di_module_id": str(m.id),
+#                     "module_name": _get_display_name(m, "DI", idx + 1),
+#                 }
+#                 for idx, m in enumerate(di_modules)
+#             ]
+#         })
+
+#         # ADD DO grouped (show even if empty)
+#         modules_list.append({
+#             "module_name": "Digital Output",
+#             "module_type": "DO",
+#             "module_id": str(do_master.id) if do_master else "",
+#             "do_modules": [
+#                 {
+#                     "slot_id": str(m.slot_id),
+#                     "do_module_id": str(m.id),
+#                     "module_name": _get_display_name(m, "DO", idx + 1),
+#                 }
+#                 for idx, m in enumerate(do_modules)
+#             ]
+#         })
+
+#     return DeviceModulesResponse(
+#         status="success",
+#         device_id=device_uuid,
+#         device_type=device_type,
+#         is_auto=is_auto,
+#         modules=modules_list,
+#     )
+
+# async def get_device_modules(device_id: str, device_type: str, is_auto: bool | None) -> DeviceModulesResponse:
+#     try:
+#         device_uuid = UUID(device_id)
+#     except Exception:
+#         raise HTTPException(status_code=400, detail="Invalid device_id format")
+
+#     devices = await FRTUDevices.select(id=device_uuid)
+#     if not devices:
+#         raise HTTPException(status_code=400, detail="Invalid device_id")
+#     device = devices[0]
+
+#     db_type = (
+#         device.type.name
+#         if hasattr(device.type, "name")
+#         else (device.type.value if hasattr(device.type, "value") else str(device.type))
+#     )
+#     if db_type.strip().upper() != device_type.strip().upper():
+#         raise HTTPException(
+#             status_code=400,
+#             detail="Device type does not match for this device_id",
+#         )
+
+#     slots: List[FRTUSlots] = await FRTUSlots.select(device_id=device_uuid)
+#     if not slots:
+#         slot_by_number = {}
+#     else:
+#         slot_by_number = {int(s.name): s.id for s in slots}
+#         slot_ids = [s.id for s in slots]
+
+#     if is_auto:
+#         ps_som_com = []
+#         if 1 in slot_by_number:
+#             ps_som_com.append({
+#                 "slot_id": str(slot_by_number[1]),
+#                 "module_id": "ps-auto",
+#                 "module_type": "PS",
+#                 "module_name": "Power Supply"
+#             })
+#         if 2 in slot_by_number:
+#             ps_som_com.append({
+#                 "slot_id": str(slot_by_number[2]),
+#                 "module_id": "som-auto",
+#                 "module_type": "SOM",
+#                 "module_name": "Master Processor"
+#             })
+#         if 3 in slot_by_number:
+#             ps_som_com.append({
+#                 "slot_id": str(slot_by_number[3]),
+#                 "module_id": "com-auto",
+#                 "module_type": "COM",
+#                 "module_name": "Communication"
+#             })
+#         return DeviceModulesResponse(
+#             status="success",
+#             device_id=device_uuid,
+#             device_type=device_type,
+#             is_auto=True,
+#             modules=ps_som_com,
+#         )
+
+#     all_modules = await FRTUModules.select()
+#     modules: List[FRTUModules] = [m for m in all_modules if m.slot_id in slot_ids] if slots else []
+
+#     module_type_ids = list(set([m.module_type for m in modules]))
+#     types = await FRTUModuleType.select(id=module_type_ids) if module_type_ids else []
+#     type_by_id = {t.id: t for t in types}
+
+#     masters = await FRTUModuleMaster.select()
+#     master_by_name = {mm.name.strip().upper(): mm for mm in masters}
+#     di_master = master_by_name.get("DIGITAL INPUT")
+#     do_master = master_by_name.get("DIGITAL OUTPUT")
+
+#     ps_som_com_modules = []
+#     di_modules = []
+#     do_modules = []
+
+#     for m in modules:
+#         t = type_by_id.get(m.module_type)
+#         type_name = t.name.strip().upper() if t else ""
+        
+#         if type_name in ["PS", "SOM", "COM"]:
+#             ps_som_com_modules.append({
+#                 "slot_id": str(m.slot_id),
+#                 "module_id": str(m.id),
+#                 "module_type": type_name,
+#                 "module_name": {
+#                     "PS": "Power Supply",
+#                     "SOM": "Master Processor",
+#                     "COM": "Communication"
+#                 }.get(type_name, m.name or type_name),
+#             })
+#         elif type_name == "DI":
+#             di_modules.append(m)
+#         elif type_name == "DO":
+#             do_modules.append(m)
+
+#     modules_list = []
+#     modules_list.extend(ps_som_com_modules)
+
+#     modules_list.append({
+#         "module_name": "Digital Input",
+#         "module_type": "DI",
+#         "module_id": str(di_master.id) if di_master else "",
+#         "di_modules": [
+#             {
+#                 "slot_id": str(m.slot_id),
+#                 "di_module_id": str(m.id),
+#                 "module_name": _get_display_name(m, "DI", idx + 1),
+#             }
+#             for idx, m in enumerate(di_modules)
+#         ]
+#     })
+
+#     modules_list.append({
+#         "module_name": "Digital Output",
+#         "module_type": "DO",
+#         "module_id": str(do_master.id) if do_master else "",
+#         "do_modules": [
+#             {
+#                 "slot_id": str(m.slot_id),
+#                 "do_module_id": str(m.id),
+#                 "module_name": _get_display_name(m, "DO", idx + 1),
+#             }
+#             for idx, m in enumerate(do_modules)
+#         ]
+#     })
+
+#     return DeviceModulesResponse(
+#         status="success",
+#         device_id=device_uuid,
+#         device_type=device_type,
+#         is_auto=is_auto,
+#         modules=modules_list,
+#     )
+async def get_device_modules(device_id: str, device_type: str, is_auto: bool | None):
     try:
         device_uuid = UUID(device_id)
     except Exception:
@@ -311,115 +571,132 @@ async def get_device_modules(
     devices = await FRTUDevices.select(id=device_uuid)
     if not devices:
         raise HTTPException(status_code=400, detail="Invalid device_id")
+
     device = devices[0]
+    db_type = device.type.value if hasattr(device.type, "value") else str(device.type)
 
-    db_type = (
-        device.type.name
-        if hasattr(device.type, "name")
-        else (device.type.value if hasattr(device.type, "value") else str(device.type))
-    )
     if db_type.strip().upper() != device_type.strip().upper():
-        raise HTTPException(
-            status_code=400,
-            detail="Device type does not match for this device_id",
-        )
+        raise HTTPException(status_code=400, detail="Device type mismatch")
 
-    slots: List[FRTUSlots] = await FRTUSlots.select(device_id=device_uuid)
-    if not slots:
-        return DeviceModulesResponse(
-            status="success",
-            device_id=device_uuid,
-            device_type=device_type,
-            is_auto=is_auto,
-            modules=[],
-        )
+    slots = await FRTUSlots.select(device_id=device_uuid)
+    slot_by_number = {int(s.name): s.id for s in slots}
 
-    slot_ids = [s.id for s in slots]
-    
-    all_modules = await FRTUModules.select()
-    modules: List[FRTUModules] = [m for m in all_modules if m.slot_id in slot_ids]
-    
-    if not modules:
-        return DeviceModulesResponse(
-            status="success",
-            device_id=device_uuid,
-            device_type=device_type,
-            is_auto=is_auto,
-            modules=[],
-        )
+    modules = await FRTUModules.select()
+    device_modules = [
+        m for m in modules
+        if (m.attribute or {}).get("device_id") == str(device_uuid)
+    ]
 
-    module_type_ids = list(set([m.module_type for m in modules]))
-    types = await FRTUModuleType.select(id=module_type_ids) if module_type_ids else []
-    type_by_id = {t.id: t for t in types}
+    module_type_ids = list(set(m.module_type for m in device_modules))
+    types = await FRTUModuleType.select(id=module_type_ids)
+    type_by_id = {t.id: t.name.upper() for t in types}
 
     masters = await FRTUModuleMaster.select()
-    master_by_name = {mm.name.strip().upper(): mm for mm in masters}
+    master_by_name = {m.name.upper(): m for m in masters}
     di_master = master_by_name.get("DIGITAL INPUT")
     do_master = master_by_name.get("DIGITAL OUTPUT")
+    ps_master = master_by_name.get("POWER SUPPLY")
+    som_master = master_by_name.get("MASTER PROCESSOR")
+    com_master = master_by_name.get("MODBUS (COM. 3)")
 
-    ps_som_com_modules = []
+    ps_som_com = []
+    # if 1 in slot_by_number and ps_master:
+    #     ps_som_com.append({
+    #         "slot_id": str(slot_by_number[1]),
+    #         "module_id": str(ps_master.id),  # ✅ frtu_module_master.id
+    #         "module_type": "PS",
+    #         "module_name": "Power Supply"
+    #     })
+    
+    # Slot 2: SOM (Always exists for FRTU)  
+    # if 2 in slot_by_number and som_master:
+    #     ps_som_com.append({
+    #         "slot_id": str(slot_by_number[2]),
+    #         "module_id": str(som_master.id),  # ✅ frtu_module_master.id
+    #         "module_type": "SOM",
+    #         "module_name": "Master Processor"
+    #     })
+    
+    # Slot 3: COM (Always exists for FRTU)
+    # if 3 in slot_by_number and com_master:
+    #     ps_som_com.append({
+    #         "slot_id": str(slot_by_number[3]),
+    #         "module_id": str(com_master.id),  # ✅ frtu_module_master.id
+    #         "module_type": "COM",
+    #         "module_name": "Modbus (Com. 3)"
+    #     })
+    ps_modules = [m for m in device_modules if type_by_id.get(m.module_type) == "PS"]
+    som_modules = [m for m in device_modules if type_by_id.get(m.module_type) == "SOM"]
+    com_modules = [m for m in device_modules if type_by_id.get(m.module_type) == "COM"]
+    # ps_som_com = []
+    if ps_modules:
+        ps = ps_modules[0]
+        ps_som_com.append({
+            "slot_id": str(ps.slot_id),
+            "module_id": str(ps.id),  
+            "master_module_id": str(ps_master.id) if ps_master else "",
+            "module_type": "PS",
+            "module_name": "Power Supply"
+        })
+    if som_modules:
+        som = som_modules[0]
+        ps_som_com.append({
+            "slot_id": str(som.slot_id),
+            "module_id": str(som.id), 
+            "master_module_id": str(som_master.id) if som_master else "",
+            "module_type": "SOM", 
+            "module_name": "Master Processor"
+        })
+    if com_modules:
+        com = com_modules[0]
+        ps_som_com.append({
+            "slot_id": str(com.slot_id),
+            "module_id": str(com.id), 
+            "master_module_id": str(com_master.id) if com_master else "",
+            "module_type": "COM",
+            "module_name": "Modbus (Com. 3)"
+        })
+
     di_modules = []
     do_modules = []
 
-    for m in modules:
-        t = type_by_id.get(m.module_type)
-        type_name = t.name.strip().upper() if t else ""
-        
-        if type_name in ["PS", "SOM", "COM"]:
-            ps_som_com_modules.append({
-                "slot_id": str(m.slot_id),
-                "module_id": str(m.id),
-                "module_type": type_name,
-                "module_name": {
-                    "PS": "Power Supply",
-                    "SOM": "Master Processor",
-                    "COM": "Communication"
-                }.get(type_name, m.name or type_name),
-            })
-        elif type_name == "DI":
+    for m in device_modules:
+        type_name = type_by_id.get(m.module_type)
+        if type_name == "DI":
             di_modules.append(m)
         elif type_name == "DO":
             do_modules.append(m)
 
-    # ✅ FIXED LOGIC: Different responses based on is_auto
     modules_list = []
+    modules_list.extend(ps_som_com)
 
-    # ALWAYS include PS/SOM/COM (both true/false)
-    modules_list.extend(ps_som_com_modules)
+    modules_list.append({
+        "module_name": "Digital Input",
+        "module_type": "DI",
+        "module_id": str(di_master.id) if di_master else "",
+        "di_modules": [
+            {
+                "slot_id": str(m.slot_id),
+                "di_module_id": str(m.id),
+                "module_name": _get_display_name(m, "DI", idx + 1),
+            }
+            for idx, m in enumerate(di_modules)
+        ]
+    })
 
-    if is_auto is True:
-        # ONLY PS/SOM/COM - NO DI/DO
-        pass
-    else:  # is_auto=False or None
-        # ADD DI grouped (show even if empty)
-        modules_list.append({
-            "module_name": "Digital Input",
-            "module_type": "DI",
-            "module_id": str(di_master.id) if di_master else "",
-            "di_modules": [
-                {
-                    "slot_id": str(m.slot_id),
-                    "di_module_id": str(m.id),
-                    "module_name": _get_display_name(m, "DI", idx + 1),
-                }
-                for idx, m in enumerate(di_modules)
-            ]
-        })
-
-        # ADD DO grouped (show even if empty)
-        modules_list.append({
-            "module_name": "Digital Output",
-            "module_type": "DO",
-            "module_id": str(do_master.id) if do_master else "",
-            "do_modules": [
-                {
-                    "slot_id": str(m.slot_id),
-                    "do_module_id": str(m.id),
-                    "module_name": _get_display_name(m, "DO", idx + 1),
-                }
-                for idx, m in enumerate(do_modules)
-            ]
-        })
+    modules_list.append({
+        "module_name": "Digital Output",
+        "module_type": "DO",
+        "module_id": str(do_master.id) if do_master else "",
+        "do_modules": [
+            {
+                "slot_id": str(m.slot_id),
+                "do_module_id": str(m.id),
+                "module_name": _get_display_name(m, "DO", idx + 1),
+            }
+            for idx, m in enumerate(do_modules)
+        ]
+    })
 
     return DeviceModulesResponse(
         status="success",
@@ -428,7 +705,6 @@ async def get_device_modules(
         is_auto=is_auto,
         modules=modules_list,
     )
-
 
 
 # ------------------- Configure Module Manually in Slot ----------------
@@ -530,7 +806,7 @@ async def configure_module_manually(
 
 
 # -------------------------------- get manually configured module list view ------------------
-# view
+# view works for PS and SOM only pass sub_module_id(frtu_modules.id)
 async def get_configured_module(
     device_id: str,
     device_type: str,
@@ -550,6 +826,26 @@ async def get_configured_module(
         raise HTTPException(status_code=400, detail="Device type does not match for this device_id")
 
     modules = await FRTUModules.select(id=module_id)
+    # masters = await FRTUModuleMaster.select(id=module_id)
+    # if modules:
+    #     module = modules[0]
+    # elif masters:
+    #     master = masters[0]
+    #     module_type_name = master.name.upper()
+    #     if module_type_name in ("POWER SUPPLY", "MASTER PROCESSOR", "MODBUS (COM. 3)"):
+    #         module_type_id = await _get_module_type_id(module_type_name[:2])
+    #         modules = await FRTUModules.select(
+    #             device_id=device_uuid, 
+    #             module_type=module_type_id
+    #         )
+    #         if modules:
+    #             module = modules[0]
+    #         else:
+    #             raise HTTPException(400, "No device-specific module found")
+    #     else:
+    #         raise HTTPException(400, "Invalid master module type")
+    # else:
+    #     raise HTTPException(400, "Invalid module_id")
     if not modules:
         raise HTTPException(status_code=400, detail="Invalid module_id")
     module = modules[0]
@@ -603,3 +899,110 @@ async def get_configured_module(
         category_info=category_info,
     )
 
+# async def get_configured_module(
+#     device_id: str,
+#     device_type: str,
+#     module_id: UUID,
+# ) -> GetConfiguredModuleResponse:
+#     try:
+#         device_uuid = UUID(device_id)
+#     except Exception:
+#         raise HTTPException(status_code=400, detail="Invalid device_id format")
+
+#     devices = await FRTUDevices.select(id=device_uuid)
+#     if not devices:
+#         raise HTTPException(status_code=400, detail="Invalid device_id")
+#     device = devices[0]
+#     db_type = getattr(device.type, "name", str(device.type))
+#     if db_type.strip().upper() != device_type.strip().upper():
+#         raise HTTPException(status_code=400, detail="Device type does not match")
+
+#     modules = await FRTUModules.select(id=module_id)
+#     if modules:
+#         module = modules[0]
+#         slot_id = module.slot_id
+#     else:
+#         masters = await FRTUModuleMaster.select(id=module_id)
+#         if not masters:
+#             raise HTTPException(status_code=400, detail="Invalid module_id")
+        
+#         master = masters[0]
+#         master_name = master.name.upper()
+        
+#         slot_mapping = {
+#             "POWER SUPPLY": ("PS", 1),
+#             "MASTER PROCESSOR": ("SOM", 2), 
+#             "MODBUS (COM. 3)": ("COM", 3)
+#         }
+        
+#         if master_name not in slot_mapping:
+#             raise HTTPException(status_code=400, detail="Only PS/SOM/COM supported")
+        
+#         module_type_name, slot_number = slot_mapping[master_name]
+        
+#         slots = await FRTUSlots.select(device_id=device_uuid)
+#         slot_by_number = {int(s.name): s for s in slots}
+        
+#         if slot_number not in slot_by_number:
+#             raise HTTPException(status_code=400, detail=f"Slot {slot_number} not found")
+        
+#         slot = slot_by_number[slot_number]
+#         slot_id = slot.id
+        
+#         module_type_id = await _get_module_type_id(module_type_name)
+#         module = FRTUModules(
+#             id=module_id,
+#             slot_id=slot_id,
+#             name=master.name,
+#             module_type=module_type_id,
+#             attribute={"device_id": str(device_uuid), "slot_number": slot_number}
+#         )
+
+#     slots = await FRTUSlots.select(id=slot_id)
+#     if not slots:
+#         raise HTTPException(status_code=400, detail="Module slot not found")
+#     slot = slots[0]
+    
+#     if slot.device_id != device_uuid:
+#         raise HTTPException(status_code=400, detail="Module does not belong to this device")
+
+#     try:
+#         slot_number = int(str(slot.name))
+#     except Exception:
+#         raise HTTPException(status_code=400, detail="Invalid slot name format")
+
+#     mtypes = await FRTUModuleType.select(id=module.module_type)
+#     module_type_name = mtypes[0].name if mtypes else ""
+
+#     if module_type_name not in ("PS", "SOM"):
+#         raise HTTPException(status_code=400, detail="Only PS/SOM modules supported")
+
+#     attr = module.attribute or {}
+#     slot_info = attr.get("slot_info") or None
+#     category_info = attr.get("category_info") or None
+
+#     fixed = FIXED_MASTER_SLOTS[module_type_name]
+#     base_slot_info = {
+#         "slot_number": fixed["slot_number"],
+#         "slot_id": str(slot_id),
+#         "card_type": fixed["card_type"],
+#         "module_name": module.name,
+#     }
+
+#     if slot_info is None:
+#         slot_info = base_slot_info
+#     else:
+#         merged = dict(base_slot_info)
+#         merged.update(slot_info)
+#         slot_info = merged
+
+#     return GetConfiguredModuleResponse(
+#         status="success",
+#         http_code=200,
+#         message="Module Fetched Successfully",
+#         module_id=module.id,
+#         module_type=module_type_name,
+#         device_id=device_uuid,
+#         slot_info=slot_info,
+#         category_info=category_info,
+#     )

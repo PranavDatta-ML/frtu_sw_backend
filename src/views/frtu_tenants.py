@@ -244,7 +244,7 @@ async def update_tenant(tenant_id: UUID, data: dict, user_id: UUID):
     )
 
 
-async def delete_tenant(tenant_id: UUID, user_id: UUID):
+async def delete_tenant(tenant_id: UUID, user_id: UUID, is_deleted: bool = False):
 
     assignments = await FRTUUserAssignment.select(user_id=user_id)
     admin_ids = [a.admin_id for a in assignments if a.admin_id]
@@ -268,21 +268,39 @@ async def delete_tenant(tenant_id: UUID, user_id: UUID):
     projects = await FRTUProjects.select(tenant_id=tenant_id)
 
     if projects:
-        return HttpStatusCode.BAD_REQUEST.response({
+        return HttpStatusCode.OK.response({
             "title": "Cannot Delete Tenant",
             "message": "You cannot delete this Tenant until all associated Projects are deleted.",
-            "action_required": "delete_projects_first"
+            "action_required": "delete_projects_first",
+            "is_deleted": False
         })
+    if not is_deleted:
+        return {
+            "http_code": 200,
+            "code": "CONFIRM_REQUIRED",
+            "message": {
+                "title": "Confirm Tenant Deletion",
+                "message": "Are you sure you want to delete this tenant?",
+                "action_required": "set_is_deleted_true",
+                "is_deleted_required": True,
+                "is_deleted": True
+            }
+        }
 
     try:
         await FRTUTenants.delete(conditions={"id": tenant_id})
         await FRTUEntities.delete(conditions={"entity_id": tenant_id})
 
-        return HttpStatusCode.OK.response(
-            message="Tenant deleted successfully",
-            data={"tenant_id": str(tenant_id)}
-        )
-
+        # return HttpStatusCode.OK.response(
+        #     message="Tenant deleted successfully",
+        #     data={"tenant_id": str(tenant_id)},
+        #     is_deleted=is_deleted
+        # )
+        return {
+            "http_code": 200,
+            "code": "SUCCESS",
+            "message": {"message": "Tenant deleted successfully", "tenant_id": str(tenant_id),"is_deleted": True},   
+        }
     except Exception as e:
         return HttpStatusCode.INTERNAL_SERVER_ERROR.response(str(e))
 

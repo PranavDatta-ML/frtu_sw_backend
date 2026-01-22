@@ -71,6 +71,25 @@ async def _get_modules_for_device(device_id: UUID) -> List[Tuple[int, str]]:
 #         attr = m.attribute or {}
 #         if attr.get("device_id") == dev_id_str:
 #             await FRTUModules.delete(m.id)
+async def delete_di_do_by_device_and_slot(
+    device_id: UUID,
+    module_type: str,
+    slot_number: int,
+):
+    dev_id_str = str(device_id)
+
+    modules = await FRTUModules.select()
+    for m in modules:
+        attr = dict(m.attribute or {})
+        if attr.get("device_id") != dev_id_str:
+            continue
+
+        code = await _get_module_type_code(m.module_type)
+        if code != module_type:
+            continue
+
+        if int(attr.get("slot_number", 0)) == slot_number:
+            await FRTUModules.delete(m.id)
 
 
 async def _delete_module_by_slot_type(device_id: UUID, logical_slot: int, module_type: str):
@@ -156,29 +175,128 @@ def _get_display_name(module: FRTUModules, module_type: str, idx: int) -> str:
     else:
         return str(module.name)
     
-async def _delete_stale_di_do_modules(device_id: UUID, desired_di_do: set[tuple[int, str]]) -> int:
-    deleted_count = 0
-    
-    slots = await FRTUSlots.select(device_id=device_id)
-    slot_ids = {s.id for s in slots}
-    
-    all_modules = await FRTUModules.select()
-    for module in all_modules:
-        if module.slot_id not in slot_ids:
+async def _move_module_to_new_slot(
+    module: FRTUModules,
+    new_slot_id: UUID,
+    new_logical_slot: int,
+):
+    attr = dict(module.attribute or {})
+    attr["slot_number"] = new_logical_slot
+
+    await FRTUModules.update(
+        conditions={"id": module.id},
+        slot_id=new_slot_id,
+        attribute=attr,
+    )
+
+async def reconcile_di_do_modules(
+    device_id: UUID,
+    desired_di_do: set[tuple[int, str]]
+) -> dict:
+
+    dev_id_str = str(device_id)
+    updated = 0
+    disabled = 0
+
+    modules = await FRTUModules.select()
+
+    for module in modules:
+        attr = dict(module.attribute or {})
+        if attr.get("device_id") != dev_id_str:
             continue
-            
+
         module_type_code = await _get_module_type_code(module.module_type)
         if module_type_code not in {"DI", "DO"}:
             continue
-        
-        attr = dict(module.attribute or {})
-        logical_slot = int(attr.get("slot_number", 0))
-        if logical_slot < 4:
+
+        old_slot = int(attr.get("slot_number", 0))
+        key = (old_slot, module_type_code)
+
+        if key not in desired_di_do:
+            attr["is_active"] = False
+            await FRTUModules.update(
+                conditions={"id": module.id},
+                attribute=attr,
+            )
+            disabled += 1
             continue
+
+        if attr.get("is_active") is False:
+            attr["is_active"] = True
+            await FRTUModules.update(
+                conditions={"id": module.id},
+                attribute=attr,
+            )
+            updated += 1
+
+    return {
+        "updated": updated,
+        "disabled": disabled,
+    }
+
+# async def _delete_stale_di_do_modules(device_id: UUID, desired_di_do: set[tuple[int, str]]) -> int:
+#     """Delete ONLY stale DI/DO modules FOR THIS SPECIFIC DEVICE"""
+#     deleted_count = 0
+    
+#     dev_id_str = str(device_id)
+#     modules = await FRTUModules.select()
+    
+#     for module in modules:
+#         attr = dict(module.attribute or {})
+#         if attr.get("device_id") != dev_id_str:
+#             continue
             
+#         if module.slot_id not in [s.id for s in await FRTUSlots.select(device_id=device_id)]:
+#             continue
+            
+#         module_type_code = await _get_module_type_code(module.module_type)
+#         if module_type_code not in {"DI", "DO"}:
+#             continue
+            
+#         logical_slot = int(attr.get("slot_number", 0))
+#         if logical_slot < 4:
+#             continue
+            
+#         key = (logical_slot, module_type_code)
+        
+#         if key not in desired_di_do:
+#             await FRTUModules.delete(module.id)
+#             log.info(f"DELETED stale {module_type_code} slot={logical_slot} device={dev_id_str}")
+#             deleted_count += 1
+    
+#     return deleted_count
+
+async def _delete_stale_di_do_modules(
+    device_id: UUID,
+    desired_di_do: set[tuple[int, str]]
+) -> int:
+    deleted_count = 0
+    dev_id_str = str(device_id)
+
+    modules = await FRTUModules.select()
+    slots = await FRTUSlots.select(device_id=device_id)
+    valid_slot_ids = {s.id for s in slots}
+
+    for module in modules:
+        attr = dict(module.attribute or {})
+
+        if attr.get("device_id") != dev_id_str:
+            continue
+
+        if module.slot_id not in valid_slot_ids:
+            continue
+
+        module_type_code = await _get_module_type_code(module.module_type)
+
+        # ✅ ONLY DI / DO ARE MANAGED HERE
+        if module_type_code not in {"DI", "DO"}:
+            continue
+
+        logical_slot = int(attr.get("slot_number", 0))
         key = (logical_slot, module_type_code)
+
         if key not in desired_di_do:
             await FRTUModules.delete(module.id)
-            log.info(f"Deleted stale module: device={device_id}, slot={logical_slot}, type={module_type_code}")
             deleted_count += 1
+
     return deleted_count

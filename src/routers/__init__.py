@@ -22,7 +22,12 @@ from src.routers.frtu_modules_slot_detail import router as FRTUModulesSlotDetail
 from src.routers.frtu_manual_module import router as FRTUManualModuleRouter
 from src.routers.frtu_di_module import router as FRTUChannelDIConfigureRouter
 from src.routers.frtu_di_module_channel import router as FRTUDIChannelConfigureRouter
-from src.routers.frtu_protocols import router as FRTUProtocolRouter
+from src.routers.frtu_protocols import router as FRTUProtocolRouter   
+
+# -------------RBAC Router ------------------
+from src.routers.rbac import router as FRTURBACRouter    
+
+from src.routers.delete_hierarchy_by_admin import router as FRTUDeleteHierarchyByAdminRouter
 
 
 def include_router(app):
@@ -60,6 +65,12 @@ def include_router(app):
     app.include_router(FRTUChannelDIConfigureRouter, prefix='')
     app.include_router(FRTUDIChannelConfigureRouter, prefix='')
     app.include_router(FRTUProtocolRouter, prefix='')
+
+    # -------------RBAC Router ------------------
+    app.include_router(FRTURBACRouter, prefix='')
+
+
+    app.include_router(FRTUDeleteHierarchyByAdminRouter, prefix='')
 
     app.include_router(TaskRouter, prefix='/api/v1')  # Tasks route registration
     

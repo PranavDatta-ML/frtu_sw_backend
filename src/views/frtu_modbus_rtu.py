@@ -83,14 +83,6 @@ async def add_or_update_modbus_module(device_id: str, device_type: str, payload:
 
     return {"status": "success", "moduleId": str(module_id)}
 
-from uuid import UUID
-from fastapi import HTTPException
-from src.models.frtu_devices import FRTUDevices
-from src.models.frtu_modules import FRTUModules
-from src.models.frtu_module_type import FRTUModuleType
-from src.models.frtu_slots import FRTUSlots
-
-
 async def get_modbus_module_info(
     device_id: str,
     device_type: str,

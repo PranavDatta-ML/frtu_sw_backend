@@ -86,24 +86,24 @@ async def api_update_tenant(
 async def api_delete_tenant(
     tenant_id: UUID,
     is_deleted: bool = Query(False),   # <-- confirmation flag
-    authorization: str = Header(...),
+    # authorization: str = Header(...),
     user_id: UUID = Depends(require_permission("edit", "TENANT"))
 ):
-    if not is_deleted:
-        return HttpStatusCode.OK.response(
-            message="Delete confirmation required",
-            data={
-                "tenant_id": str(tenant_id),
-                "is_deleted": False,
-                "info": "Pass ?is_deleted=true to delete this tenant"
-            }
-        )
+    # if not is_deleted:
+    #     return HttpStatusCode.OK.response(
+    #         message="Delete confirmation required",
+    #         data={
+    #             "tenant_id": str(tenant_id),
+    #             "is_deleted": False,
+    #             "info": "Pass ?is_deleted=true to delete this tenant"
+    #         }
+    #     )
 
-    token = authorization.split(" ")[1]
-    decoded = decode_access_token(token)
-    requester_id = UUID(decoded["sub"])
+    # token = authorization.split(" ")[1]
+    # decoded = decode_access_token(token)
+    # requester_id = UUID(decoded["sub"])
 
-    return await delete_tenant(tenant_id, requester_id)
+    return await delete_tenant(tenant_id, user_id, is_deleted)
 
 
 

@@ -555,15 +555,15 @@ async def delete_device(data: Dict[str, Any], requester_id: UUID, confirm_delete
     slots = await FRTUSlots.select(device_id=device_id)
     if not slots:
         if not confirm_delete:
-            return HttpStatusCode.OK.response(
-                message="Device has no slots; deletion not confirmed",
-                data={"is_deleted": False},
-            )
+            return HttpStatusCode.OK.response({
+                "message": "Device has no slots; deletion not confirmed",
+                "is_deleted": True
+            })
         await FRTUDevices.delete(conditions={"id": device_id})
-        return HttpStatusCode.OK.response(
-            message="Device deleted successfully (no slots found)",
-            data={"is_deleted": True},
-        )
+        return HttpStatusCode.OK.response({
+            "message": "Device deleted successfully (no slots found)",
+            "is_deleted": True      
+            })
 
     slot_ids = [getattr(s, "id") for s in slots]
     modules = await FRTUModules.select()
@@ -577,26 +577,24 @@ async def delete_device(data: Dict[str, Any], requester_id: UUID, confirm_delete
             if module:
                 slot_names.add(getattr(s, "name", str(getattr(s, "id"))))
         slot_list = ", ".join(sorted(slot_names)) if slot_names else "one or more slots"
-        return HttpStatusCode.BAD_REQUEST.response(
-            f"Cannot delete device. Modules are still mapped to {slot_list}.",
-            data={"is_deleted": False},
-        )
+        return HttpStatusCode.OK.response({
+            "message": f"Cannot delete device. Modules are still mapped to {slot_list}.",
+            "is_deleted": False,
+        })
 
     if not confirm_delete:
-        return HttpStatusCode.OK.response(
-            message="Device has only empty slots; deletion not confirmed",
-            data={"device_id": str(device_id), "is_deleted": False},
-        )
+        return HttpStatusCode.OK.response({
+            "message": "Device has only empty slots; deletion not confirmed",
+            "device_id": str(device_id), "is_deleted": True
+        })
 
     await FRTUSlots.delete(conditions={"device_id": device_id})
     await FRTUDevices.delete(conditions={"id": device_id})
 
-    return HttpStatusCode.OK.response(
-        message="Device and all empty slots deleted successfully",
-        data={"is_deleted": True},
-    )
-
-
+    return HttpStatusCode.OK.response({
+        "message": "Device and all empty slots deleted successfully",
+        "is_deleted": True
+    })
 # ---------------- Delete Device ----------------
 # async def delete_device(
 #     request: Request,

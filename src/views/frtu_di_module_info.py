@@ -335,6 +335,9 @@ async def get_di_module_info(
         if "channel_id" in ch_copy:
             ch_copy["channelId"] = ch_copy.pop("channel_id")
 
+        if "channelNo" not in ch_copy and "channelNoPrimary" in ch_copy:
+            ch_copy["channelNo"] = ch_copy["channelNoPrimary"]
+
         ch_type = ch_copy.get("channelType")
         if ch_type == "Single Point Parameter":
             sp_count += 1

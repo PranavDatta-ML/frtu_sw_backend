@@ -58,7 +58,7 @@ async def api_read_users(
     decoded = decode_access_token(token)
     requester_id = UUID(decoded["sub"])  # available if you later want user-specific logic
 
-    return await read_users(page=page, limit=limit, search=search)
+    return await read_users(page=page, limit=limit, search=search, requester_id=requester_id)
 
 
 @router.get("/{user_id}")
@@ -70,7 +70,7 @@ async def api_read_user_by_id(
     token = authorization.split(" ")[1]
     decoded = decode_access_token(token)
     requester_id = UUID(decoded["sub"])
-    return await read_user_by_id(user_id)
+    return await read_user_by_id(user_id, requester_id=requester_id)
 
 
 @router.put("/{user_id}")
@@ -83,7 +83,7 @@ async def api_update_user_by_id(
     token = authorization.split(" ")[1]
     decoded = decode_access_token(token)
     requester_id = UUID(decoded["sub"])
-    return await update_user_by_id(user_id=user_id, data=payload, updater_id=requester_id)
+    return await update_user_by_id(user_id=user_id, data=payload,  requester_id=requester_id)
 
 
 @router.delete("/{user_id}")

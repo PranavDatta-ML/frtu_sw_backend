@@ -455,24 +455,25 @@ async def delete_site(data: Dict[str, Any], requester_id: UUID, confirm_delete: 
 
     device_rows = await FRTUDevices.select(site_id=site_id)
     if device_rows:
-        return HttpStatusCode.BAD_REQUEST.response(
+        return HttpStatusCode.OK.response(
             {
                 "message": f"Cannot delete site '{site_name}'. Devices exist under this site.",
                 "action_required": "delete_devices_first",
                 "is_deleted": False,
+
             }
         )
 
     if not confirm_delete:
-        return HttpStatusCode.OK.response(
-            message=f"Site '{site_name}' has no devices; deletion not confirmed",
-            data={"is_deleted": False},
-        )
+        return HttpStatusCode.OK.response({
+            "message": f"Site '{site_name}' has no devices; deletion not confirmed",
+            "is_deleted": True
+        })
 
     await FRTUSites.delete(conditions={"id": site_id})
 
-    return HttpStatusCode.OK.response(
-        message=f"Site '{site_name}' deleted successfully",
-        data={"is_deleted": True},
-    )
+    return HttpStatusCode.OK.response({
+        "message": f"Site '{site_name}' deleted successfully",
+        "is_deleted": True
+    })
 

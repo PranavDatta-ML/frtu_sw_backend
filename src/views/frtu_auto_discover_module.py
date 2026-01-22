@@ -10,7 +10,7 @@ from src.models.frtu_modules import FRTUModules
 from src.models.frtu_slots import FRTUSlots
 from src.schemas.frtu_auto_discover_module import  AutoDiscoverRequest
 from src import HttpStatusCode, log
-from src.services.modules import  _delete_module_by_slot_type, _delete_stale_di_do_modules, _fmt_modules, _format_slots, _get_modules_for_device, _get_slots_for_device, _insert_module
+from src.services.modules import  _delete_module_by_slot_type, _delete_stale_di_do_modules, _fmt_modules, _format_slots, _get_module_type_code, _get_modules_for_device, _get_slots_for_device, _insert_module, _move_module_to_new_slot, reconcile_di_do_modules
 from src.utils.frtu_client import frtu_client
 
 
@@ -277,31 +277,31 @@ async def auto_discover_modules(payload: AutoDiscoverRequest, user_id: UUID):
                 name="Digital Output",
             )
             existing_keys.add((logical_slot, "DO"))
-        slot_id = slot_by_number.get(logical_slot)
-        if not slot_id:
-            continue
+        # slot_id = slot_by_number.get(logical_slot)
+        # if not slot_id:
+        #     continue
 
-        module_key = (logical_slot, "DI" if type_flag == 1 else "DO")
-        desired_di_do.add(module_key)
+        # module_key = (logical_slot, "DI" if type_flag == 1 else "DO")
+        # desired_di_do.add(module_key)
 
-        if type_flag == 1 and should_insert(logical_slot, "DI"):
-            await _insert_module(
-                device_id=device_id,
-                slot_id=slot_id,
-                logical_slot=logical_slot,
-                module_type_code="DI",
-                name="Digital Input",
-            )
-            existing_keys.add((logical_slot, "DI"))
-        elif type_flag == 2 and should_insert(logical_slot, "DO"):
-            await _insert_module(
-                device_id=device_id,
-                slot_id=slot_id,
-                logical_slot=logical_slot,
-                module_type_code="DO",
-                name="Digital Output",
-            )
-            existing_keys.add((logical_slot, "DO"))
+        # if type_flag == 1 and should_insert(logical_slot, "DI"):
+        #     await _insert_module(
+        #         device_id=device_id,
+        #         slot_id=slot_id,
+        #         logical_slot=logical_slot,
+        #         module_type_code="DI",
+        #         name="Digital Input",
+        #     )
+        #     existing_keys.add((logical_slot, "DI"))
+        # elif type_flag == 2 and should_insert(logical_slot, "DO"):
+        #     await _insert_module(
+        #         device_id=device_id,
+        #         slot_id=slot_id,
+        #         logical_slot=logical_slot,
+        #         module_type_code="DO",
+        #         name="Digital Output",
+        #     )
+        #     existing_keys.add((logical_slot, "DO"))
 
     deleted_count = await _delete_stale_di_do_modules(device_id, desired_di_do)
     log.info(f"[AUTO_DISCOVER] Deleted {deleted_count} stale DI/DO modules")
@@ -316,6 +316,89 @@ async def auto_discover_modules(payload: AutoDiscoverRequest, user_id: UUID):
             "type": device_type.value,
         },
     }
+
+# async def auto_discover_modules(payload: AutoDiscoverRequest, user_id: UUID):
+#     entity = payload.entity
+#     device_name_input = entity.name.strip()
+#     device_type = entity.type
+
+#     devices = await FRTUDevices.select(
+#         name=device_name_input,
+#         type=device_type.value,
+#     )
+#     if not devices:
+#         return {
+#             "http_code": 404,
+#             "code": "DEVICE_NOT_FOUND",
+#             "message": "Device not found",
+#         }
+
+#     device = devices[0]
+#     device_id = device.id
+#     device_id_str = str(device_id)
+
+#     if not frtu_client.health_check():
+#         return HttpStatusCode.SERVICE_UNAVAILABLE.response(
+#             f"FRTU device '{device.name}' is not reachable"
+#         )
+
+#     devids = frtu_client.parse_devids_conf()
+#     slot_by_number = await _get_slots_for_device(device_id)
+
+#     all_modules = await FRTUModules.select()
+
+#     existing_modules: dict[tuple[str, int], FRTUModules] = {}
+
+#     for m in all_modules:
+#         attr = dict(m.attribute or {})
+#         if attr.get("device_id") != device_id_str:
+#             continue
+
+#         code = await _get_module_type_code(m.module_type)
+#         if code not in {"DI", "DO"}:
+#             continue
+
+#         slot_no = int(attr.get("slot_number", 0))
+#         if slot_no > 0:
+#             existing_modules[(code, slot_no)] = m
+
+#     desired_modules: set[tuple[str, int]] = set()
+#     for d in devids:
+#         slot_no = int(d["slot"])
+#         mtype = "DI" if int(d["module_type"]) == 1 else "DO"
+#         desired_modules.add((mtype, slot_no))
+
+#     # INSERT OR MOVE
+#     for mtype, slot_no in desired_modules:
+#         slot_id = slot_by_number.get(slot_no)
+#         if not slot_id:
+#             continue
+
+#         existing = existing_modules.get((mtype, slot_no))
+#         if not existing:
+#             await _insert_module(
+#                 device_id=device_id,
+#                 slot_id=slot_id,
+#                 logical_slot=slot_no,
+#                 module_type_code=mtype,
+#                 name="Digital Input" if mtype == "DI" else "Digital Output",
+#             )
+
+#     # DELETE STALE (DI / DO ONLY, THIS DEVICE ONLY)
+#     for (mtype, slot_no), module in existing_modules.items():
+#         if (mtype, slot_no) not in desired_modules:
+#             await FRTUModules.delete(module.id)
+
+#     return {
+#         "http_code": 200,
+#         "code": "AUTO_DISCOVERY_READY",
+#         "message": "Auto discovery completed successfully",
+#         "data": {
+#             "device_id": device_id_str,
+#             "device_name": device.name,
+#             "type": device_type.value,
+#         },
+#     }
 
 
 # async def auto_discover_modules_by_site(payload: AutoDiscoverBySitePayload, user_id: UUID):

@@ -13,6 +13,7 @@ from src.models import FRTUUsers, FRTURoles, FRTUUserAssignment, FRTUPermissions
 from src.schemas.frtu_roles import FRTURoleAdd, FRTURoleCreate, FRTURoleRead, FRTURoleReadEntity, FRTURoleReadPayload, FRTURoleUpdate
 from src.services.permissions import _get_permissions_grouped, _user_can_view_all_roles
 from src.services.role import _user_has_role
+from src.services.user_access import is_child_of
 from src.utils.jwt_tokens import decode_access_token
 
 # async def create_role(data: FRTURoleCreate, creator_id: UUID | None = None):
@@ -124,25 +125,22 @@ async def create_role(data: FRTURoleCreate, creator_id: UUID | None = None):
 
 # -------- list/search for current user --------
 async def read_roles(page: int, limit: int, name: str | None, user_id: UUID):
-    can_view_all = await _user_can_view_all_roles(user_id)
+    created_roles = await FRTURoles.select(user_id=user_id)
 
-    if can_view_all:
-        roles = await FRTURoles.select()
-    else:
-        assignments = await FRTUUserAssignment.select(user_id=user_id)
-        role_ids_for_user = [a.role_id for a in assignments]
-        if not role_ids_for_user:
-            return {
-                "http_code": 200,
-                "code": "OK",
-                "message": "No roles assigned to user",
-                "page": page,
-                "page_size": limit,
-                "total": 0,
-                "total_pages": 0,
-                "roles": [],
-            }
-        roles = await FRTURoles.select(id=role_ids_for_user)
+    assignments = await FRTUUserAssignment.select(user_id=user_id)
+    assigned_role_ids = {a.role_id for a in assignments}
+
+    assigned_roles = []
+    if assigned_role_ids:
+        assigned_roles = await FRTURoles.select(id=list(assigned_role_ids))
+
+    role_map = {}
+    for r in created_roles:
+        role_map[r.id] = r
+    # for r in assigned_roles:
+    #     role_map[r.id] = r
+
+    roles = list(role_map.values())
 
     if name:
         s = name.lower()
@@ -162,6 +160,7 @@ async def read_roles(page: int, limit: int, name: str | None, user_id: UUID):
             {"resource": res, "actions": sorted(list(actions))}
             for res, actions in grouped_perms.items()
         ]
+
         roles_data.append(
             {
                 "id": str(r.id),
@@ -183,21 +182,77 @@ async def read_roles(page: int, limit: int, name: str | None, user_id: UUID):
     }
 
 # -------- get single role by id for current user --------
+# async def read_role_by_id(role_id: UUID, user_id: UUID):
+#     can_view_all = await _user_can_view_all_roles(user_id)
+
+#     if not can_view_all:
+#         assigned = await FRTUUserAssignment.select(user_id=user_id, role_id=role_id)
+#         if not assigned:
+#             return HttpStatusCode.ACCESS_DENIED.response(
+#                 "You are not allowed to view this role"
+#             )
+
+#     roles = await FRTURoles.select(id=role_id)
+#     if not roles:
+#         return HttpStatusCode.NOT_FOUND.response("Role not found")
+#     role = roles[0]
+
+#     grouped = await _get_permissions_grouped([role.id])
+#     grouped_perms = grouped.get(role.id, {})
+
+#     perms_out = [
+#         {"resource": res, "actions": sorted(list(actions))}
+#         for res, actions in grouped_perms.items()
+#     ]
+
+#     return {
+#         "http_code": 200,
+#         "code": "OK",
+#         "message": "Role fetched successfully",
+#         "id": str(role.id),
+#         "name": role.name,
+#         "description": role.description,
+#         "permissions": perms_out,
+#     }
+
 async def read_role_by_id(role_id: UUID, user_id: UUID):
-    can_view_all = await _user_can_view_all_roles(user_id)
-
-    if not can_view_all:
-        assigned = await FRTUUserAssignment.select(user_id=user_id, role_id=role_id)
-        if not assigned:
-            return HttpStatusCode.ACCESS_DENIED.response(
-                "You are not allowed to view this role"
-            )
-
     roles = await FRTURoles.select(id=role_id)
     if not roles:
         return HttpStatusCode.NOT_FOUND.response("Role not found")
+
     role = roles[0]
 
+    can_view_all = await _user_can_view_all_roles(user_id)
+
+    # if not can_view_all:
+    #     if role.user_id != user_id:
+    #         assigned = await FRTUUserAssignment.select(
+    #             user_id=user_id,
+    #             role_id=role_id,
+    #         )
+    #         if not assigned:
+    #             return HttpStatusCode.ACCESS_DENIED.response(
+    #                 "You are not allowed to view this role"
+    #             )
+    if not can_view_all:
+        allowed = False
+
+        if role.user_id == user_id:
+            allowed = True
+        elif await is_child_of(user_id, role.user_id):
+            allowed = True
+        else:
+            assigned = await FRTUUserAssignment.select(
+                user_id=user_id,
+                role_id=role_id,
+            )
+            if assigned:
+                allowed = True
+
+        if not allowed:
+            return HttpStatusCode.ACCESS_DENIED.response(
+                "You are not allowed to view this role"
+            )
     grouped = await _get_permissions_grouped([role.id])
     grouped_perms = grouped.get(role.id, {})
 
@@ -215,6 +270,7 @@ async def read_role_by_id(role_id: UUID, user_id: UUID):
         "description": role.description,
         "permissions": perms_out,
     }
+
 
 async def update_role(role_id: UUID, data: FRTURoleUpdate, updater_id: UUID | None = None):
     if updater_id is not None:
