@@ -1,5 +1,5 @@
 import os
-import jinja2
+import jinja2 # type: ignore
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 import base64

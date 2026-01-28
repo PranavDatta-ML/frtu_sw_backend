@@ -12,8 +12,8 @@ from src import HttpStatusCode
 from src.core.settings import Settings
 from src.models.frtu_users import FRTUUsers
 # from src import Settings
-import redis.asyncio as redis
-import bcrypt
+import redis.asyncio as redis # type: ignore
+import bcrypt # type: ignore
 import base64
 from src.templates.email_loader import load_template, embed_images
 
