@@ -44,7 +44,22 @@ class Settings(BaseSettings):
     JWT_AUDIENCE: str = Field(default="www.etlab.co", env="frtu")
     JWT_ISSUER: str = Field(default="www.etlab.co", env="frtu")
 
+    REDIS_HOST: str = Field(default="127.0.0.1")
+    REDIS_PORT: int = Field(default=6379)
+    REDIS_DB: int = Field(default=0)
+
+    SES_HOST: str = Field(default="email-smtp.ap-south-1.amazonaws.com")
+    SES_PORT: int = Field(default=587)
+    SES_USERNAME: str = Field(default="")
+    SES_PASSWORD: str = Field(default="")
+    SES_FROM_EMAIL: str = Field(default="message-noreply@kimbal.io")
+
     DATABASE_BINDS: Dict[str, str] = {}
+
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+        case_sensitive = False
 
     def __init__(self, **values):
         super().__init__(**values)
@@ -81,3 +96,4 @@ class Settings(BaseSettings):
         Returns the singleton instance of the Settings class using lru_cache for caching.
         """
         return cls()
+# settings = Settings.get_settings()
