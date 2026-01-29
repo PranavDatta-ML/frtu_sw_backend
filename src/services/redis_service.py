@@ -16,7 +16,7 @@ import redis.asyncio as redis # type: ignore
 import bcrypt # type: ignore
 import base64
 from src.templates.email_loader import load_template, embed_images
-
+import pytz
 from src.utils.security import generate_salt, hash_password
 
 settings = Settings()
@@ -36,7 +36,7 @@ SES_CONFIG = {
     "from_email": "message-noreply@kimbal.io"
 }
 
-async def generate_unique_otp(length=6):
+async def generate_unique_otp(length=4):
     chars = string.ascii_uppercase + string.digits  # A-Z + 0-9
     while True:
         otp = ''.join(random.choices(chars, k=length))
@@ -219,6 +219,10 @@ async def send_email_otp(email: str, otp: str):
     
     with open(html_path, 'r', encoding='utf-8') as f:
         html_content = f.read()
+
+    ist = pytz.timezone("Asia/Kolkata")
+    expiry_time = (datetime.now(ist) + timedelta(minutes=10)).strftime("%I:%M %p IST")
+    html_content = html_content.replace("[EXPIRY_TIME]", expiry_time)
     
     html_content = html_content.replace("[OTP_CODE]", otp)
     
@@ -250,8 +254,8 @@ async def send_email_otp(email: str, otp: str):
         server.starttls()
         server.login(SES_CONFIG['username'], SES_CONFIG['password'])
         server.send_message(msg)
-    print(f"🔍 HTML preview: {otp} -> [OTP_CODE] replaced")
-    print(f"✅ OTP '{otp}' sent to {email}")
+    print(f"HTML preview: {otp} -> [OTP_CODE] replaced")
+    print(f"OTP '{otp}' sent to {email}")
 
 
     
@@ -259,9 +263,9 @@ async def send_otp(email: str):
     users = await FRTUUsers.select(email=email)
     if not users:
         return HttpStatusCode.NOT_FOUND.response(message="User not found")
-    
-    otp = await generate_unique_otp(6)
-    await redis_client.setex(f"otp:{email}", 300, otp)
+
+    otp = await generate_unique_otp(4)
+    await redis_client.setex(f"otp:{email}", 600, otp)
     # await redis_client.setex(f"otp:*:{otp}", 10, "used")
     print(f"Redis: Stored OTP={otp} for {email}")
     
@@ -273,13 +277,19 @@ async def send_otp(email: str):
         "data": {"email": email}
     }
 
-async def verify_otp(email: str):
+async def verify_otp(email: str, otp_input: str):
     stored_otp = await redis_client.get(f"otp:{email}")
+
     if not stored_otp:
-        return None, HttpStatusCode.BAD_REQUEST.response(message="Invalid or expired OTP")
-    
+        return HttpStatusCode.BAD_REQUEST.response(message="Invalid or expired OTP"), False
+
+    if stored_otp != otp_input:
+        return HttpStatusCode.BAD_REQUEST.response(message="Invalid OTP"), False
+
     await redis_client.delete(f"otp:{email}")
-    return stored_otp, True
+    return None, True
+
+
 
 async def generate_reset_token(email: str):
     payload = json.dumps({
@@ -291,58 +301,101 @@ async def generate_reset_token(email: str):
     token = bcrypt.hashpw(payload, salt)
     return base64.urlsafe_b64encode(token).decode().rstrip('=')[:64]
 
+# async def send_reset_email(email: str, token: str):
+#     msg = MIMEMultipart('alternative')
+#     msg['Subject'] = 'Reset Your Password'
+#     msg['From'] = SES_CONFIG['from_email']
+#     msg['To'] = email
+    
+#     reset_link = f"http://localhost:3000/reset-password/{token}"
+    
+#     html = f"""
+#     <!DOCTYPE html>
+#     <html><body style="margin:0;padding:0;background:#f8f9fa;font-family:Arial,sans-serif;">
+#         <table width="100%" style="padding:40px 20px;">
+#             <tr><td align="center">
+#                 <table style="max-width:600px;background:#fff;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,0.1);padding:40px;">
+#                     <tr><td align="center" style="padding-bottom:30px;">
+#                         <h1 style="color:#1773BE;font-size:28px;margin:0;">Reset Password</h1>
+#                         <p style="color:#6c757d;font-size:16px;margin:10px 0 0 0;">RTU Configurator</p>
+#                     </td></tr>
+#                     <tr><td align="center" style="padding-bottom:40px;">
+#                         <p style="font-size:16px;color:#495057;line-height:1.6;text-align:center;max-width:400px;">
+#                             Click below to reset your password. Link expires in <strong>1 hour</strong>.
+#                         </p>
+#                     </td></tr>
+#                     <tr><td align="center" style="padding-bottom:30px;">
+#                         <a href="{reset_link}" style="display:inline-block;background:#1773BE;color:white;padding:18px 50px;text-decoration:none;border-radius:12px;font-size:18px;font-weight:600;box-shadow:0 8px 25px rgba(23,115,190,0.3);">
+#                             Reset Password
+#                         </a>
+#                     </td></tr>
+#                     <tr><td align="center" style="padding-bottom:30px;">
+#                         <div style="background:#ECF4FA;border:2px solid #D7E8F4;border-radius:12px;padding:20px 30px;display:inline-block;">
+#                             <p style="margin:0 0 10px 0;color:#6c757d;font-size:14px;">Direct Link:</p>
+#                             <a href="{reset_link}" style="background:#ffffff;border-radius:8px;padding:12px;font-family:monospace;font-size:14px;color:#1773BE;word-break:break-all;text-align:center;max-width:350px;">
+#                                 {reset_link}
+#                             </a>
+#                         </div>
+#                     </td></tr>
+#                     <tr><td style="padding-top:30px;border-top:1px solid #e9ecef;padding-bottom:20px;">
+#                         <p style="color:#adb5bd;font-size:14px;line-height:1.5;margin:0;text-align:center;">
+#                             Didn't request this? <strong>Ignore this email</strong>.
+#                         </p>
+#                     </td></tr>
+#                 </table>
+#             </td></tr>
+#         </table>
+#     </body></html>
+#     """
+    
+#     msg.attach(MIMEText(html, 'html'))
+    
+#     with smtplib.SMTP(SES_CONFIG['host'], SES_CONFIG['port']) as server:
+#         server.starttls()
+#         server.login(SES_CONFIG['username'], SES_CONFIG['password'])
+#         server.send_message(msg)
+
 async def send_reset_email(email: str, token: str):
-    msg = MIMEMultipart('alternative')
-    msg['Subject'] = 'Reset Your Password'
+    reset_link = f"http://localhost:3000/reset-password/{token}"
+
+    html_path = r"D:\KMP FRTU Configurator\frtu_config_backend_v1\src\templates\email\reset_password_email_template.html"
+
+    with open(html_path, 'r', encoding='utf-8') as f:
+        html_content = f.read()
+
+    html_content = html_content.replace("[RESET_LINK]", reset_link)
+
+    msg = MIMEMultipart('related')
+    msg['Subject'] = 'Reset Your Password - RTU Configurator'
     msg['From'] = SES_CONFIG['from_email']
     msg['To'] = email
-    
-    reset_link = f"http://localhost:3000/reset-password/{token}"
-    
-    html = f"""
-    <!DOCTYPE html>
-    <html><body style="margin:0;padding:0;background:#f8f9fa;font-family:Arial,sans-serif;">
-        <table width="100%" style="padding:40px 20px;">
-            <tr><td align="center">
-                <table style="max-width:600px;background:#fff;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,0.1);padding:40px;">
-                    <tr><td align="center" style="padding-bottom:30px;">
-                        <h1 style="color:#1773BE;font-size:28px;margin:0;">Reset Password</h1>
-                        <p style="color:#6c757d;font-size:16px;margin:10px 0 0 0;">RTU Configurator</p>
-                    </td></tr>
-                    <tr><td align="center" style="padding-bottom:40px;">
-                        <p style="font-size:16px;color:#495057;line-height:1.6;text-align:center;max-width:400px;">
-                            Click below to reset your password. Link expires in <strong>1 hour</strong>.
-                        </p>
-                    </td></tr>
-                    <tr><td align="center" style="padding-bottom:30px;">
-                        <a href="{reset_link}" style="display:inline-block;background:#1773BE;color:white;padding:18px 50px;text-decoration:none;border-radius:12px;font-size:18px;font-weight:600;box-shadow:0 8px 25px rgba(23,115,190,0.3);">
-                            Reset Password
-                        </a>
-                    </td></tr>
-                    <tr><td align="center" style="padding-bottom:30px;">
-                        <div style="background:#ECF4FA;border:2px solid #D7E8F4;border-radius:12px;padding:20px 30px;display:inline-block;">
-                            <p style="margin:0 0 10px 0;color:#6c757d;font-size:14px;">Direct Link:</p>
-                            <a href="{reset_link}" style="background:#ffffff;border-radius:8px;padding:12px;font-family:monospace;font-size:14px;color:#1773BE;word-break:break-all;text-align:center;max-width:350px;">
-                                {reset_link}
-                            </a>
-                        </div>
-                    </td></tr>
-                    <tr><td style="padding-top:30px;border-top:1px solid #e9ecef;padding-bottom:20px;">
-                        <p style="color:#adb5bd;font-size:14px;line-height:1.5;margin:0;text-align:center;">
-                            Didn't request this? <strong>Ignore this email</strong>.
-                        </p>
-                    </td></tr>
-                </table>
-            </td></tr>
-        </table>
-    </body></html>
-    """
-    msg.attach(MIMEText(html, 'html'))
-    
+
+    images_dir = r"D:\KMP FRTU Configurator\frtu_config_backend_v1\src\templates\email\images"
+    image_map = {
+        "Frame 12.jpg": "logo_small",
+        "Frame 11.jpg": "logo_large"
+    }
+
+    for img_file, cid_name in image_map.items():
+        img_path = os.path.join(images_dir, img_file)
+        if os.path.exists(img_path):
+            with open(img_path, 'rb') as f:
+                img = MIMEImage(f.read())
+                img.add_header('Content-ID', f'<{cid_name}>')
+                msg.attach(img)
+
+    html_content = html_content.replace('src="images/Frame 12.jpg"', 'src="cid:logo_small"')
+    html_content = html_content.replace('src="images/Frame 11.jpg"', 'src="cid:logo_large"')
+
+    msg.attach(MIMEText(html_content, 'html'))
+
     with smtplib.SMTP(SES_CONFIG['host'], SES_CONFIG['port']) as server:
         server.starttls()
         server.login(SES_CONFIG['username'], SES_CONFIG['password'])
         server.send_message(msg)
+
+    print(f"✅ Reset link sent to {email}")
+
 
 async def request_password_reset(email: str):
     users = await FRTUUsers.select(email=email)
