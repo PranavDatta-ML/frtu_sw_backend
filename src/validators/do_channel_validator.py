@@ -166,6 +166,46 @@ def normalize_do_channel(ch) -> dict:
     data["channelNo"] = ch_no
     return data
 
+def _get_ch_no(ch: dict) -> str:
+    v = ch.get("channelNo")
+    if v is None:
+        v = ch.get("channel_no")
+    return str(v or "").strip()
+
+
+def _get_assoc(ch: dict) -> str:
+    v = ch.get("associateChannelNo")
+    if v is None:
+        v = ch.get("associate_channel_no")
+    return str(v or "").strip()
+
+def validate_do_channels_strict(channels: dict) -> None:
+    used_names = {}
+    dp_pairs = {}
+
+    for ch in channels.values():
+        ch_no = _get_ch_no(ch)
+        name = (ch.get("name") or "").strip()
+        ch_type = ch.get("channelType")
+        assoc = _get_assoc(ch)
+
+        if name:
+            if name in used_names and used_names[name] != ch_no:
+                raise HTTPException(400, f"Channel name '{name}' already used by channel {used_names[name]}")
+            used_names[name] = ch_no
+
+        if ch_type == DP and assoc:
+            if assoc == ch_no:
+                raise HTTPException(400, "Channel cannot associate with itself")
+
+            if ch_no in dp_pairs and dp_pairs[ch_no] != assoc:
+                raise HTTPException(400, f"DP channel {ch_no} already associated with {dp_pairs[ch_no]}")
+
+            if assoc in dp_pairs and dp_pairs[assoc] != ch_no:
+                raise HTTPException(400, f"DP channel {assoc} already associated with {dp_pairs[assoc]}")
+
+            dp_pairs[ch_no] = assoc
+            dp_pairs[assoc] = ch_no
 # def normalize_do_channel(ch) -> dict:
 #     if isinstance(ch, dict):
 #         ch_no = str(int(ch["channelNoPrimary"]))

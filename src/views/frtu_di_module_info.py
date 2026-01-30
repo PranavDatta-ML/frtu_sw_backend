@@ -12,6 +12,7 @@ from src.utils.config_parser import update_devids_conf
 from src.utils.di_ini_builder import clear_di_ini_slot, update_di_ini_for_module, build_di_ini_payload
 from src.utils.frtu_client import frtu_client
 from src.validators.di_channel_validator import DP, SP, normalize_dp_associations, validate_di_channels, validate_di_channels_strict
+from src.validators.di_do_name_validator import validate_unique_module_name
 
 # ------------------------------------------add di module general info and channels working for sp and dp------------------------------------------
 async def add_di_module_info(
@@ -76,7 +77,12 @@ async def add_di_module_info(
         "module_name": "Digital Input",
         "module_type": "DI",
     })
-
+    module_display_name = general_info.get("name")
+    await validate_unique_module_name(
+        device_id=device_uuid,
+        module_type_name="DI",
+        module_name=module_display_name,
+    )
     existing_channels = channel_blob.get("channels", {})
     updated_channels = dict(existing_channels)
 
@@ -218,6 +224,13 @@ async def edit_di_module_info(
     general_info["slot_id"] = str(new_slot_id)
 
     attribute["module_di_info"] = {"general_info": general_info}
+    module_display_name = general_info.get("name")
+    await validate_unique_module_name(
+        device_id=device_uuid,
+        module_type_name="DI",
+        module_name=module_display_name,
+        exclude_module_id=sub_module_id,
+    )
 
     channels = channel_blob.get("channels", {})
     for ch in payload.get("channels", []):

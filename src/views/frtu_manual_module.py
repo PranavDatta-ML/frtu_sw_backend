@@ -637,7 +637,7 @@ async def get_device_modules(
                 "module_name": {
                     "PS": "Power Supply",
                     "SOM": "Master Processor",
-                    "COM": "Communication"
+                    "COM": "Modbus (Com. 3)"
                 }.get(type_name, m.name or type_name),
             })
         elif type_name == "DI":
@@ -645,7 +645,6 @@ async def get_device_modules(
         elif type_name == "DO":
             do_modules.append(m)
 
-    # ✅ FIXED LOGIC: Different responses based on is_auto
     modules_list = []
 
     # ALWAYS include PS/SOM/COM (both true/false)
