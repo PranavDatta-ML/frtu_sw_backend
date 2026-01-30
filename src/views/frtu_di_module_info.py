@@ -222,7 +222,11 @@ async def edit_di_module_info(
     channels = channel_blob.get("channels", {})
     for ch in payload.get("channels", []):
         key = f"channel_{int(ch['channelNoPrimary'])}"
-        channels.setdefault(key, {}).update(ch)
+        # channels.setdefault(key, {}).update(ch)
+        channels.setdefault(key, {})
+        channels[key]["channelNo"] = ch['channelNoPrimary']      # ← ADD THIS
+        channels[key]["channelNoPrimary"] = ch['channelNoPrimary']
+        channels[key].update(ch)
 
     validate_di_channels(channels)
     validate_di_channels_strict(channels)
