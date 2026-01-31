@@ -3,6 +3,7 @@ from fastapi import APIRouter, Body, Depends, Query
 
 from src.middleware.CreatePermissionMiddleware import require_permission
 from src.schemas.frtu_di_module_info import  ConfigureDIModuleRequest, GetDIModuleRequest
+from src.views.frtu_di_do_channel import delete_channel
 from src.views.frtu_di_module_info import add_di_module_info, edit_di_module_info, get_di_module_info, get_di_module_info_by_slot_id
 
 
@@ -67,3 +68,23 @@ async def api_get_di_module_info(
         sub_module_id=sub_module_id,
         user_id=user_id,
     )
+
+@router.delete("/delete_di_channel")
+async def api_delete_channel(
+    device_id: str = Query(...),
+    device_type: str = Query(...),
+    sub_module_id: str = Query(...),
+    channel_id: str = Query(...),
+    user_id: UUID = Depends(require_permission("edit", "MODULE")),
+):
+    return await delete_channel(device_id, device_type, sub_module_id, channel_id, user_id, expected_module_type="DI")
+
+@router.delete("/delete_do_channel")
+async def api_delete_do_channel(
+    device_id: str = Query(...),
+    device_type: str = Query(...),
+    sub_module_id: str = Query(...),
+    channel_id: str = Query(...),
+    user_id: UUID = Depends(require_permission("edit", "MODULE")),
+):
+    return await delete_channel(device_id, device_type, sub_module_id, channel_id, user_id, expected_module_type="DO")

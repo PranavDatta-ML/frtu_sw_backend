@@ -80,7 +80,7 @@ async def add_do_module_info(
         device_id=device_uuid,
         module_type_name="DO",
         module_name=module_display_name,
-        exclude_module_id=module_id,
+        current_module_id=module_id,
     )
 
     existing_channels = channel_blob.get("channels", {})
@@ -148,7 +148,10 @@ async def add_do_module_info(
         "DO",
     )
 
-    serial_number = general_info.get("serial_number")
+    serial_number = (
+        general_info.get("serialNumber") 
+        or general_info.get("serial_number")
+    )
     if serial_number:
         await asyncio.to_thread(
             update_do_ini_for_module,

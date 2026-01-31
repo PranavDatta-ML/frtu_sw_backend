@@ -5,7 +5,7 @@ import requests # type: ignore
 logger = logging.getLogger(__name__)
 
 class FRTUClient:
-    def __init__(self, frtu_ip: str = "10.150.2.235", frtu_port: int = 8000, timeout: int = 10):
+    def __init__(self, frtu_ip: str = "10.150.3.188", frtu_port: int = 8000, timeout: int = 10):
         self.base_url = f"http://{frtu_ip}:{frtu_port}"
         self.timeout = timeout
         self.frtu_ip = frtu_ip
@@ -205,5 +205,5 @@ class FRTUClient:
     #     return response.json()
 
 # Initialize global FRTU client
-frtu_client = FRTUClient(frtu_ip="10.150.2.235", frtu_port=8000)
+frtu_client = FRTUClient(frtu_ip="10.150.3.188", frtu_port=8000)
 # frtu_client = FRTUClient(frtu_ip="127.0.0.1", frtu_port=8000)

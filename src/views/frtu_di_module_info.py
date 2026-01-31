@@ -82,6 +82,7 @@ async def add_di_module_info(
         device_id=device_uuid,
         module_type_name="DI",
         module_name=module_display_name,
+        current_module_id=module_id,
     )
     existing_channels = channel_blob.get("channels", {})
     updated_channels = dict(existing_channels)
