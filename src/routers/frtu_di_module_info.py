@@ -3,8 +3,8 @@ from fastapi import APIRouter, Body, Depends, Query
 
 from src.middleware.CreatePermissionMiddleware import require_permission
 from src.schemas.frtu_di_module_info import  ConfigureDIModuleRequest, GetDIModuleRequest
-from src.views.frtu_di_do_channel import delete_channel
-from src.views.frtu_di_module_info import add_di_module_info, edit_di_module_info, get_di_module_info, get_di_module_info_by_slot_id
+from src.views.frtu_di_do_channel import delete_di_channel
+from src.views.frtu_di_module_info import add_di_module_info, delete_di_module, edit_di_module_info, get_di_module_info, get_di_module_info_by_slot_id
 
 
 router = APIRouter(
@@ -77,14 +77,13 @@ async def api_delete_channel(
     channel_id: str = Query(...),
     user_id: UUID = Depends(require_permission("edit", "MODULE")),
 ):
-    return await delete_channel(device_id, device_type, sub_module_id, channel_id, user_id, expected_module_type="DI")
+    return await delete_di_channel(device_id, device_type, sub_module_id, channel_id, user_id)
 
-@router.delete("/delete_do_channel")
-async def api_delete_do_channel(
+@router.delete("/delete_di_module_info")
+async def api_delete_di_module(
     device_id: str = Query(...),
     device_type: str = Query(...),
     sub_module_id: str = Query(...),
-    channel_id: str = Query(...),
     user_id: UUID = Depends(require_permission("edit", "MODULE")),
 ):
-    return await delete_channel(device_id, device_type, sub_module_id, channel_id, user_id, expected_module_type="DO")
+    return await delete_di_module(device_id, device_type, sub_module_id, user_id)

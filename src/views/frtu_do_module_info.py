@@ -338,7 +338,7 @@ async def edit_do_module_info(
         device_id=device_uuid,
         module_type_name="DO",
         module_name=module_display_name,
-        exclude_module_id=sub_module_id,
+        current_module_id=sub_module_id,
     )
 
     existing_channels = channel_blob.get("channels", {})
@@ -403,5 +403,57 @@ async def edit_do_module_info(
         "updated_general_info": bool(payload.get("general_info")),
         "updated_channels_count": len(payload.get("channels", [])),
         "total_channels": len(existing_channels),
+    }
+
+# async def delete_do_module(device_id: str, device_type: str, sub_module_id: str):
+#     device_uuid = UUID(device_id)
+#     module_uuid = UUID(sub_module_id)
+
+#     device = (await FRTUDevices.select(id=device_uuid))[0]
+#     db_type = device.type.name if hasattr(device.type, "name") else str(device.type)
+#     if db_type.upper() != device_type.upper():
+#         raise HTTPException(400, "Device type mismatch")
+
+#     module = (await FRTUModules.select(id=module_uuid))[0]
+#     slot = (await FRTUSlots.select(id=module.slot_id, device_id=device_uuid))[0]
+#     slot_number = int(slot.name)
+
+#     module_type = (await FRTUModuleType.select(id=module.module_type))[0].name.upper()
+#     if module_type != "DO":
+#         raise HTTPException(400, "Only DO modules can be deleted from this API")
+
+#     attribute = module.attribute or {}
+#     serial_number = attribute.get("module_do_info", {}).get("general_info", {}).get("serial_number")
+
+#     if serial_number:
+#         await asyncio.to_thread(clear_do_ini_slot, serial_number, slot_number)
+
+#     await asyncio.to_thread(frtu_client.remove_devids_slot, slot_number)
+
+#     await FRTUModules.delete(conditions={"id": module_uuid})
+
+#     return {
+#         "status": "success",
+#         "http_code": 200,
+#         "message": "DO module deleted successfully",
+#         "data": {"slot_number": slot_number},
+#     }
+
+async def delete_do_module(device_id: str, device_type: str, sub_module_id: str, user_id: UUID):
+    device_uuid = UUID(device_id)
+    module_uuid = UUID(sub_module_id)
+
+    module = (await FRTUModules.select(id=module_uuid))[0]
+
+    slot = (await FRTUSlots.select(id=module.slot_id))[0]
+    slot_number = int(slot.name)
+
+    await FRTUModules.delete(conditions={"id": module_uuid})
+
+    await asyncio.to_thread(frtu_client.delete_do_module, slot_number)
+
+    return {
+        "status": "success",
+        "message": f"DO Module at slot {slot_number} deleted successfully"
     }
 

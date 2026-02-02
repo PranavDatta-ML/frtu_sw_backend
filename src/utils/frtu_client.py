@@ -180,7 +180,29 @@ class FRTUClient:
         )
         response.raise_for_status()
         return True
-    
+    def delete_di_module(self, slot_number: int) -> bool:
+        response = requests.post(
+            f"{self.base_url}/api/config/ini/delete-di-module",
+            json={"slot_number": slot_number},
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+
+        self.remove_devids_slot(slot_number)
+        return True
+
+
+    def delete_do_module(self, slot_number: int) -> bool:
+        response = requests.post(
+            f"{self.base_url}/api/config/ini/delete-do-module",
+            json={"slot_number": slot_number},
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+
+        self.remove_devids_slot(slot_number)
+        return True
+
     def update_mb_config(self, payload: dict) -> bool:
         try:
             response = requests.post(

@@ -240,7 +240,15 @@ async def auto_discover_modules(payload: AutoDiscoverRequest, user_id: UUID):
         slot_id = slot_by_number.get(slot_no)
         if not slot_id:
             continue
+        if slot_no == 3:
+            existing_in_slot = await FRTUModules.select(slot_id=slot_id)
+            if existing_in_slot:
+                log.info(f"[AUTO_DISCOVER] Slot 3 already occupied. Skipping COM insert.")
+                continue
 
+        key = (slot_no, code)
+        if key in existing:
+            continue
         await _insert_module(
             device_id=device_id,
             slot_id=slot_id,

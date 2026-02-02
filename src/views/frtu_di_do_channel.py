@@ -234,8 +234,8 @@ async def delete_do_channel(
         enforce_do_rules(channels)
         await asyncio.to_thread(update_do_ini_for_module, device_id, slot_number, channels)
         # log.info(f"Rewrote {len(channels)} remaining DO channels to slot {slot_number}")
-    else:
-        logging.log.info(f"All DO channels deleted from slot {slot_number}")
+    # else:
+        # logging.log.info(f"All DO channels deleted from slot {slot_number}")
 
     await FRTUModules.update(
         conditions={"id": module_uuid},
@@ -244,7 +244,7 @@ async def delete_do_channel(
 
     await asyncio.to_thread(frtu_client.update_devids_conf, slot_number, "DO")
 
-    logging.log.info(f"DO Channel {deleted_channel_no} deleted from slot {slot_number}, remaining: {len(channels)}")
+    # logging.log.info(f"DO Channel {deleted_channel_no} deleted from slot {slot_number}, remaining: {len(channels)}")
     
     return {
         "status": "success",
