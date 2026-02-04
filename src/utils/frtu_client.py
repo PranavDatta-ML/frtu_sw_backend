@@ -217,7 +217,35 @@ class FRTUClient:
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to update mb_config.ini: {str(e)}")
             raise Exception(f"FRTU mb_config update failed: {str(e)}")
-    
+        
+    def delete_modbus_param(self, channel_no: str, slave_index: int, param_index: int):
+        requests.post(
+            f"{self.base_url}/api/config/modbus/delete-param",
+            json={
+                "channel_no": channel_no,
+                "slave_index": slave_index,
+                "param_index": param_index
+            },
+            timeout=self.timeout
+        ).raise_for_status()
+
+    def delete_modbus_slave(self, channel_no: str, slave_index: int):
+        requests.post(
+            f"{self.base_url}/api/config/modbus/delete-slave",
+            json={
+                "channel_no": channel_no,
+                "slave_index": slave_index
+            },
+            timeout=self.timeout
+        ).raise_for_status()
+
+    def delete_modbus_channel(self, channel_no: str):
+        requests.post(
+            f"{self.base_url}/api/config/modbus/delete-channel",
+            json={"channel_no": channel_no},
+            timeout=self.timeout
+        ).raise_for_status()
+
     # def update_mb_config(frtu_ip: str, payload: dict):
     #     url = f"http://{frtu_ip}:8000/api/config/modbus/update"
 
