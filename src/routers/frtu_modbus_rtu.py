@@ -7,7 +7,7 @@ from src.views.frtu_modbus_rtu import add_or_update_modbus_module, delete_modbus
 
 router = APIRouter(tags=["Modbus Module"])
 
-@router.post("/add_modbus_info")
+@router.post("/add_modbus_rtu_info")
 async def api_add_modbus_module(
     device_id: str = Query(...),
     device_type: str = Query(...),
@@ -21,7 +21,7 @@ async def api_add_modbus_module(
         user_id
     )
 
-@router.get("/get_modbus_info")
+@router.get("/get_modbus_rtu_info")
 async def api_get_modbus_module_info(
     device_id: str,
     device_type: str,
@@ -37,7 +37,7 @@ async def api_get_modbus_module_info(
         user_id=user_id,
     )
 
-@router.delete("/delete_modbus_parameter")
+@router.delete("/delete_modbus_rtu_parameter")
 async def api_delete_modbus_parameter(
     device_id: str,
     device_type: str,
@@ -53,7 +53,7 @@ async def api_delete_modbus_parameter(
         user_id=user_id,
     )
 
-@router.delete("/delete_modbus_slave")
+@router.delete("/delete_modbus_rtu_slave")
 async def api_delete_modbus_slave(
     device_id: str,
     device_type: str,

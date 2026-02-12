@@ -73,8 +73,8 @@ async def add_or_update_modbus_module(device_id: str, device_type: str, payload:
     }
 
     existing = await FRTUModules.select(slot_id=slot.id)
-
     existing_channels_map = {}
+    
     if existing and existing[0].channel:
         for ch in existing[0].channel.get("channels", []):
             ch_no = ch.get("channelConfig", {}).get("channelNo")
@@ -82,9 +82,61 @@ async def add_or_update_modbus_module(device_id: str, device_type: str, payload:
                 existing_channels_map[str(ch_no)] = ch
 
     for ch in payload.categoryInfo.channels:
-        ch_dict = ch.model_dump(mode="json")
-        ch_no = ch_dict["channelConfig"]["channelNo"]
-        existing_channels_map[str(ch_no)] = ch_dict
+        ch_no = ch.channelConfig.channelNo
+        if str(ch_no) in existing_channels_map:
+            existing_ch = existing_channels_map[str(ch_no)]
+            
+            existing_slaves = {str(sl.get("id")): sl for sl in existing_ch["channelConfig"].get("modbusSlaves", [])}
+            new_slaves = []
+            
+            for slave in ch.channelConfig.modbusSlaves:  
+                slave_id = str(slave.id) if slave.id else str(uuid4())
+                
+                existing_params = {}
+                if slave_id in existing_slaves:
+                    for p in existing_slaves[slave_id]["slaveConfig"]["modbusParameters"]:
+                        existing_params[str(p["id"])] = p
+                
+                merged_params = []
+                for param in slave.slaveConfig.modbusParameters:  
+                    param_id = str(param.id) if param.id else str(uuid4())
+                    
+                    param_config = param.parameterConfig.model_dump()
+                    param_config["readFunctionCode"] = param_config["readFunctionCode"].replace("FC", "")
+                    dt = param_config["dataType"].upper().replace(" ", "_")
+                    if not dt.startswith("DT_"):
+                        dt = f"DT_{dt}"
+                    param_config["dataType"] = dt
+                    param_config["endianness"] = param_config["endianness"].replace(" ", "_").upper()
+                    
+                    merged_params.append({
+                        "id": param_id,
+                        "status": param.status,  
+                        "parameterConfig": param_config
+                    })
+                    existing_params.pop(param_id, None)
+                
+                for remaining_param in existing_params.values():
+                    merged_params.append(remaining_param)
+                
+                new_slaves.append({
+                    "id": slave_id,
+                    "status": slave.status,  
+                    "slaveConfig": {
+                        **slave.slaveConfig.model_dump(exclude={"modbusParameters"}),
+                        "modbusParameters": merged_params
+                    }
+                })
+                existing_slaves.pop(slave_id, None)
+            
+            for remaining_slave in existing_slaves.values():
+                new_slaves.append(remaining_slave)
+            
+            ch_dict = ch.model_dump(mode="json")
+            ch_dict["channelConfig"]["modbusSlaves"] = new_slaves
+            existing_channels_map[str(ch_no)] = ch_dict
+        else:
+            existing_channels_map[str(ch_no)] = ch.model_dump(mode="json")
 
     channel_data = {"channels": list(existing_channels_map.values())}
 
@@ -104,7 +156,14 @@ async def add_or_update_modbus_module(device_id: str, device_type: str, payload:
         )
         module_id = obj.id
 
-    frtu_client.update_mb_config(payload.model_dump(mode="json"))
+    # frtu_client.update_mb_config(payload.model_dump(mode="json"))
+    frtu_payload = {
+        "categoryInfo": {
+            "channels": channel_data["channels"]
+        }
+    }
+
+    frtu_client.update_mb_config(frtu_payload)
 
     return {"status": "success", "moduleId": str(module_id)}
 

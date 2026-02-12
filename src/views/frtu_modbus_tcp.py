@@ -1,4 +1,5 @@
 import asyncio
+import ipaddress
 from uuid import UUID, uuid4
 from requests.exceptions import ConnectTimeout, ConnectionError
 from fastapi import HTTPException
@@ -52,131 +53,18 @@ def validate_ioa(ioa: str) -> str:
     except ValueError:
         raise ValueError("Invalid IOA value")
 
-def validate_max_count(count: str, max_limit: int, field_name: str) -> int:
+def validate_max_count(count: str, max_limit: int, field_name: str, allow_zero: bool = False) -> int:
     try:
         num = int(count)
         if num > max_limit:
             raise ValueError(f"{field_name} cannot exceed {max_limit}")
-        if num < 1:
-            raise ValueError(f"{field_name} must be at least 1")
+        if num < 0:
+            raise ValueError(f"{field_name} must be ≥ 0")
+        if num == 0 and not allow_zero:
+            raise ValueError(f"{field_name} cannot be 0")
         return num
     except ValueError:
         raise ValueError(f"{field_name} must be a valid number")
-
-# async def add_or_update_modbus_tcp(device_id: str, device_type: str, payload: ModbusTCPPayload, user_id: UUID):
-#     try:
-#         device_uuid = UUID(device_id)
-#         device = await FRTUDevices.select(id=device_uuid)
-#         if not device:
-#             raise HTTPException(status_code=404, detail="Device not found")
-
-#         device = device[0]
-#         if device.type.name.upper() != device_type.upper():
-#             raise HTTPException(status_code=400, detail=f"Device type mismatch. Expected: {device.type.name}")
-
-#         category = payload.categoryInfo
-#         if not category.modbusSlaves:
-#             raise HTTPException(status_code=400, detail="At least one TCP slave required")
-
-#         slot_uuid = validate_slot_uuid(payload.slotInfo.slotId)
-#         max_slaves = validate_max_count(category.maxSlaves, 10, "maxSlaves")
-#         if len(category.modbusSlaves) > max_slaves:
-#             raise HTTPException(status_code=400, detail=f"Slaves count ({len(category.modbusSlaves)}) exceeds maxSlaves ({max_slaves})")
-
-#         slaves = category.modbusSlaves
-#         for i, slave in enumerate(slaves):
-#             if not slave.slaveConfig.name or len(slave.slaveConfig.name.strip()) == 0:
-#                 raise HTTPException(status_code=400, detail=f"Slave {i+1} name is required")
-        
-#             validate_port(slave.slaveConfig.port)
-#             validate_unit_id(slave.slaveConfig.unitId)
-            
-#             if not slave.slaveConfig.accessToken or len(slave.slaveConfig.accessToken) < 4:
-#                 raise HTTPException(status_code=400, detail=f"Slave {i+1} accessToken must be at least 4 characters")
-            
-#             max_params = validate_max_count(slave.slaveConfig.maxParameters, 50, "maxParameters")
-#             if len(slave.slaveConfig.modbusParameters) > max_params:
-#                 raise HTTPException(status_code=400, detail=f"Slave {i+1} parameters ({len(slave.slaveConfig.modbusParameters)}) exceeds maxParameters ({max_params})")
-            
-#             if not slave.slaveConfig.modbusParameters:
-#                 raise HTTPException(status_code=400, detail=f"Slave {i+1} requires at least one parameter")
-
-#             for j, param in enumerate(slave.slaveConfig.modbusParameters):
-#                 pc = param.parameterConfig
-#                 if not pc.parameterName or len(pc.parameterName.strip()) == 0:
-#                     raise HTTPException(status_code=400, detail=f"Slave {i+1} Parameter {j+1} parameterName is required")
-                
-#                 validate_address(pc.address)
-#                 if not pc.readFunctionCode or pc.readFunctionCode not in ['1', '2', '3', '4']:
-#                     raise HTTPException(status_code=400, detail=f"Slave {i+1} Parameter {j+1} readFunctionCode must be 1,2,3 or 4")
-                
-#                 validate_ioa(pc.ioa)
-
-#         for slave in slaves:
-#             slave.id = slave.id or str(uuid4())
-#             for param in slave.slaveConfig.modbusParameters:
-#                 param.id = param.id or str(uuid4())
-#                 param_config = param.parameterConfig.model_dump()
-#                 param_config["readFunctionCode"] = param_config["readFunctionCode"].replace("FC", "")
-#                 dt = param_config["dataType"].upper().replace(" ", "_")
-#                 if not dt.startswith("DT_"):
-#                     dt = f"DT_{dt}"
-#                 param_config["dataType"] = dt
-#                 param_config["endianness"] = param_config["endianness"].replace(" ", "_").upper()
-#                 param.parameterConfig = param_config
-
-#         attribute = {
-#             "slotInfo": payload.slotInfo.model_dump(),
-#             "protocol": "TCP"
-#         }
-
-#         channel_data = {"tcpSlaves": [s.model_dump(mode="json") for s in slaves]}
-
-#         existing = await FRTUModules.select(slot_id=slot_uuid)
-#         if existing:
-#             module_id = existing[0].id
-#             await FRTUModules.update(
-#                 conditions={"id": module_id},
-#                 attribute=attribute,
-#                 channel=channel_data
-#             )
-#             operation = "updated"
-#         else:
-#             module_types = await FRTUModuleType.select(name="COM")
-#             if not module_types:
-#                 raise HTTPException(status_code=404, detail="COM module type not found in database")
-            
-#             module_type = module_types[0]
-#             obj = await FRTUModules.insert(
-#                 slot_id=slot_uuid,
-#                 module_type=module_type.id,
-#                 attribute=attribute,
-#                 channel=channel_data
-#             )
-#             module_id = obj.id
-#             operation = "created"
-
-#         try:
-#             frtu_payload = {"modbusSlaves": channel_data["tcpSlaves"]}
-#             await asyncio.to_thread(frtu_client.update_mb_tcp_config, frtu_payload)
-#         except (ConnectTimeout, ConnectionError):
-#             raise HTTPException(
-#                 status_code=503,
-#                 detail={"msg": "FRTU device is not reachable. Please check device power or network."}
-#             )
-
-#         return {
-#             "status": "success",
-#             "message": f"Modbus TCP module {operation} successfully for device {device_id}",
-#             "moduleId": str(module_id),
-#             "deviceId": device_id,
-#             "slaves": len(slaves)
-#         }
-
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
 async def add_or_update_modbus_tcp(device_id: str, device_type: str, payload: ModbusTCPPayload, user_id: UUID):
     device_uuid = UUID(device_id)
@@ -188,7 +76,70 @@ async def add_or_update_modbus_tcp(device_id: str, device_type: str, payload: Mo
     if device.type.name.upper() != device_type.upper():
         raise HTTPException(400, "Device type mismatch")
 
-    slot_uuid = UUID(payload.slotInfo.slotId)
+    category = payload.categoryInfo
+    
+    if payload.moduleType != "COM":
+        raise HTTPException(400, "moduleType must be 'COM'")
+    if payload.slotInfo.cardType != "Modbus":
+        raise HTTPException(400, "slotInfo.cardType must be 'Modbus'")
+
+    try:
+        slot_uuid = validate_slot_uuid(payload.slotInfo.slotId)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    # if not category.modbusSlaves:
+    #     raise HTTPException(400, "At least one slave required")
+    
+    max_slaves = validate_max_count(category.maxSlaves, 10, "maxSlaves", allow_zero=True)
+    if len(category.modbusSlaves) > max_slaves:
+        raise HTTPException(400, detail=f"Slaves count ({len(category.modbusSlaves)}) exceeds maxSlaves ({max_slaves})")
+    
+    for i, slave in enumerate(category.modbusSlaves, 1):
+        slave_config = slave.slaveConfig
+        
+        if not slave_config.name or not slave_config.name.strip():
+            raise HTTPException(400, f"Slave {i}: name required")
+        
+        validate_port(slave_config.port)
+        validate_unit_id(slave_config.unitId)
+        
+        if len(slave_config.accessToken or "") < 4:
+            raise HTTPException(400, f"Slave {i}: accessToken ≥4 chars")
+        
+        max_params = validate_max_count(slave_config.maxParameters, 50, "maxParameters", allow_zero=True)
+        if len(slave_config.modbusParameters) > max_params:
+            raise HTTPException(400, detail=f"Slave {i} parameters ({len(slave_config.modbusParameters)}) exceeds maxParameters ({max_params})")
+        
+        # if not slave_config.modbusParameters:
+        #     raise HTTPException(400, detail=f"Slave {i} requires at least one parameter")
+        
+        for j, param in enumerate(slave_config.modbusParameters, 1):
+            pc = param.parameterConfig
+            
+            if not pc.parameterName or not pc.parameterName.strip():
+                raise HTTPException(400, f"Slave {i} Param {j}: parameterName required")
+            
+            validate_address(pc.address)
+            
+            fc = pc.readFunctionCode
+            if fc not in ["1", "2", "3", "4"]:
+                raise HTTPException(400, f"Slave {i} Param {j}: readFunctionCode 1,2,3,4")
+            
+            validate_ioa(pc.ioa)
+
+    for slave in category.modbusSlaves:
+        if not slave.id:
+            slave.id = str(uuid4())
+        for param in slave.slaveConfig.modbusParameters:
+            if not param.id:
+                param.id = str(uuid4())
+
+    for i, slave in enumerate(category.modbusSlaves, 1):
+        try:
+            ipaddress.IPv4Address(slave.slaveConfig.ipAddress)
+        except:
+            raise HTTPException(400, f"Slave {i}: Invalid IPv4 (192.168.2.12)")
 
     existing_module = await FRTUModules.select(slot_id=slot_uuid)
     existing_slaves = {}
@@ -247,7 +198,7 @@ async def add_or_update_modbus_tcp(device_id: str, device_type: str, payload: Mo
 
     attribute = {
         "slotInfo": payload.slotInfo.model_dump(),
-        "protocol": "TCP"
+        "modbusCategoryInfo": payload.categoryInfo.model_dump(exclude={"modbusSlaves"}, mode="json")
     }
 
     channel_data = {"tcpSlaves": merged_slaves}
@@ -279,7 +230,7 @@ async def add_or_update_modbus_tcp(device_id: str, device_type: str, payload: Mo
         "moduleId": str(module_id),
         "deviceId": device_id,
         "slaves": len(merged_slaves)
-    }    
+    }
 
 async def get_modbus_tcp_info(device_id: str, device_type: str, sub_module_id: str, slot_id: str, user_id: UUID):
     try:
