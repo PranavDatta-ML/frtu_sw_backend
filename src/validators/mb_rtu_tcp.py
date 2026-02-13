@@ -37,33 +37,35 @@ async def _delete_rtu_parameter(module, parameter_id: str):
 
 async def _delete_tcp_parameter(module, parameter_id: str):
     slaves = module.channel.get("tcpSlaves", [])
-    parameter_found = False
 
-    for slave in slaves:
-        params = slave.get("slaveConfig", {}).get("modbusParameters", [])
-        new_params = []
-        
-        for param in params:
-            if str(param.get("id")) != parameter_id:
-                new_params.append(param)
-            else:
-                parameter_found = True
-        
-        slave["slaveConfig"]["modbusParameters"] = new_params
+    for s_idx, slave in enumerate(slaves, start=1):
+        params = slave["slaveConfig"]["modbusParameters"]
 
-    if not parameter_found:
-        raise HTTPException(404, "Parameter not found")
+        for p_idx, p in enumerate(params, start=1):
+            if str(p["id"]) == parameter_id:
 
-    await FRTUModules.update(
-        conditions={"id": module.id},
-        channel={"tcpSlaves": slaves},
-    )
+                await asyncio.to_thread(
+                    frtu_client.delete_mb_tcp_param,
+                    s_idx,
+                    p_idx
+                )
 
-    await asyncio.to_thread(frtu_client.update_mb_tcp_config, {"modbusSlaves": slaves})
+                params.pop(p_idx - 1)
 
-    return {"status": "success", "message": "TCP parameter deleted from DB and mb_conf_tcp.ini"}
+                await FRTUModules.update(
+                    conditions={"id": module.id},
+                    channel={"tcpSlaves": slaves}
+                )
 
+                return {
+                    "status": "success", 
+                    "message": "TCP parameter deleted from DB and mb_config.ini", 
+                    "deleted_parameter_id": parameter_id, 
+                    "remaining_parameters": len(params), 
+                    "slave_id": slave.get("id")
+                }
 
+    raise HTTPException(404, "Parameter not found")
 
 async def _delete_rtu_slave(module, slave_id: str):
     channels = module.channel.get("channels", [])
@@ -94,30 +96,25 @@ async def _delete_rtu_slave(module, slave_id: str):
 
 async def _delete_tcp_slave(module, slave_id: str):
     slaves = module.channel.get("tcpSlaves", [])
-    new_slaves = []
-    found = False
-    deleted_params = 0
 
-    for sl in slaves:
-        if str(sl.get("id")) == slave_id:
-            found = True
-            deleted_params += len(sl.get("slaveConfig", {}).get("modbusParameters", []))
-            continue
-        new_slaves.append(sl)
+    for s_idx, slave in enumerate(slaves, start=1):
+        if str(slave["id"]) == slave_id:
 
-    if not found:
-        raise HTTPException(404, "Slave not found")
+            await asyncio.to_thread(
+                frtu_client.delete_mb_tcp_slave,
+                s_idx
+            )
 
-    await FRTUModules.update(
-        conditions={"id": module.id},
-        channel={"tcpSlaves": new_slaves}
-    )
+            slaves.pop(s_idx - 1)
 
-    await asyncio.to_thread(frtu_client.update_mb_tcp_config, {"modbusSlaves": new_slaves})
+            await FRTUModules.update(
+                conditions={"id": module.id},
+                channel={"tcpSlaves": slaves}
+            )
 
     return {
         "status": "success",
         "deleted_slave_id": slave_id,
-        "deleted_parameters_count": deleted_params,
-        "remaining_slaves": len(new_slaves)
+        "deleted_parameters_count": len(slave.get("slaveConfig", {}).get("modbusParameters", [])),
+        "remaining_slaves": len(slaves)
     }

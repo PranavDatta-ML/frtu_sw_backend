@@ -44,6 +44,7 @@ class TCPParameter(BaseModel):
 
 class TCPSlaveConfig(BaseModel):
     name: str
+    slaveName: Optional[str]
     description: Optional[str]
     ipAddress: str 
     port: str = Field(..., pattern=r"^\d{1,5}$")

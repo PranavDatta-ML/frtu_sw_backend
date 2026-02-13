@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from src.models.frtu_devices import FRTUDevices
 from src.models.frtu_module_type import FRTUModuleType
 from src.models.frtu_modules import FRTUModules
+from src.models.frtu_slots import FRTUSlots
 from src.schemas.frtu_modbus_tcp import ModbusTCPPayload, ModbusTCPResponse
 from src.utils.frtu_client import frtu_client
 
@@ -80,8 +81,8 @@ async def add_or_update_modbus_tcp(device_id: str, device_type: str, payload: Mo
     
     if payload.moduleType != "COM":
         raise HTTPException(400, "moduleType must be 'COM'")
-    if payload.slotInfo.cardType != "Modbus":
-        raise HTTPException(400, "slotInfo.cardType must be 'Modbus'")
+    # if payload.slotInfo.cardType != "Modbus":
+    #     raise HTTPException(400, "slotInfo.cardType must be 'Modbus'")
 
     try:
         slot_uuid = validate_slot_uuid(payload.slotInfo.slotId)
@@ -232,74 +233,63 @@ async def add_or_update_modbus_tcp(device_id: str, device_type: str, payload: Mo
         "slaves": len(merged_slaves)
     }
 
-async def get_modbus_tcp_info(device_id: str, device_type: str, sub_module_id: str, slot_id: str, user_id: UUID):
-    try:
-        try:
-            device_uuid = UUID(device_id)
-            slot_uuid = UUID(slot_id)
-            module_uuid = UUID(sub_module_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid UUID format in request")
+async def get_modbus_tcp_info(
+    device_id: str,
+    device_type: str,
+    sub_module_id: str | None,
+    slot_id: str | None,
+    user_id,
+):
+    device_uuid = UUID(device_id)
 
-        device = await FRTUDevices.select(id=device_uuid)
-        if not device:
-            raise HTTPException(status_code=404, detail="Device not found")
+    device = (await FRTUDevices.select(id=device_uuid))[0]
+    db_type = device.type.name if hasattr(device.type, "name") else str(device.type)
 
-        device = device[0]
-        if device.type.name.upper() != device_type.upper():
-            raise HTTPException(status_code=400, detail=f"Device type mismatch. Expected {device.type.name}")
+    if db_type.upper() != device_type.upper():
+        raise HTTPException(400, "Device type mismatch")
 
-        module = await FRTUModules.select(id=module_uuid, slot_id=slot_uuid)
-        if not module:
-            raise HTTPException(status_code=404, detail="Modbus TCP module not found for this slot")
+    module = None
 
-        module = module[0]
+    if sub_module_id:
+        modules = await FRTUModules.select(id=UUID(sub_module_id))
+        if not modules:
+            raise HTTPException(404, "Modbus module not found")
+        module = modules[0]
 
-        module_type = await FRTUModuleType.select(id=module.module_type)
-        if not module_type:
-            raise HTTPException(status_code=404, detail="Module type not found")
+    elif slot_id:
+        modules = await FRTUModules.select(slot_id=UUID(slot_id))
+        if not modules:
+            raise HTTPException(404, "No module found in slot")
+        module = modules[0]
 
-        module_type_name = module_type[0].name
+    # Fetch slot details (like RTU)
+    slot = (await FRTUSlots.select(id=module.slot_id))[0]
 
-        attribute = module.attribute or {}
-        channel = module.channel or {}
+    attribute = module.attribute or {}
+    channel_data = module.channel or {}
 
-        slot_info = attribute.get("slotInfo")
-        if not slot_info:
-            raise HTTPException(status_code=500, detail="Slot information missing in module")
-
-        tcp_slaves = channel.get("tcpSlaves", [])
-
-        if not tcp_slaves:
-            raise HTTPException(status_code=404, detail="No Modbus TCP slaves configured in this module")
-
-        first_slave = tcp_slaves[0]
-        category_info = {
-            "moduleId": attribute.get("moduleId", "PR-UNKNOWN"),
-            "moduleName": attribute.get("moduleName", "Modbus TCP"),
-            "categoryDescription": attribute.get("categoryDescription"),
-            "communicationProtocol": "Modbus TCP",
-            "hardwareVersion": attribute.get("hardwareVersion", "1.0"),
-            "firmwareVersion": attribute.get("firmwareVersion", "1.0"),
-            "maxSlaves": str(len(tcp_slaves)),
-            "modbusSlaves": tcp_slaves
+    # FIXED slotInfo: Use slot table + Modbus defaults
+    slot_info = attribute.get("slotInfo")
+    if not slot_info:
+        slot_info = {
+            "slotId": str(module.slot_id),           # Real slot UUID
+            "slotNumber": getattr(slot, 'name', '3'), # slot.name OR fixed '3'
+            "cardType": "Modbus"                     # Fixed for Modbus
         }
 
-        response = ModbusTCPResponse(
-            status="success",
-            moduleId=str(module.id),
-            moduleType=module_type_name,
-            deviceId=str(device.id),
-            slotInfo=slot_info,
-            categoryInfo=category_info
-        )
+    return {
+        "status": "success",
+        "http_code": 200,
+        "message": "Modbus module fetched successfully",
+        "module_id": str(module.id),
+        "device_id": device_id,
+        "slotInfo": slot_info,
+        "categoryInfo": {
+            **attribute.get("modbusCategoryInfo", {}),
+            "modbusSlaves": channel_data.get("tcpSlaves", []),
+        },
+    }
 
-        return response.model_dump()
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
 async def delete_modbus_tcp_parameter(
     device_id: str,

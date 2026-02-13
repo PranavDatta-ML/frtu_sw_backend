@@ -208,16 +208,21 @@ async def get_modbus_module_info(
     attribute = module.attribute or {}
     channel_data = module.channel or {}
 
+    slot_info = attribute.get("slotInfo")
+    if not slot_info:
+        slot_info = {
+            "slotId": str(module.slot_id),
+            "slotNumber": getattr(slot, 'name', '3'),
+            "cardType": "Modbus"
+        }
+
     return {
         "status": "success",
         "http_code": 200,
         "message": "Modbus module fetched successfully",
         "module_id": str(module.id),
         "device_id": device_id,
-        # "slot_id": str(slot.id),
-        # "slot_number": slot.name,
-        # "module_type": module_type.name,
-        "slotInfo": attribute.get("slotInfo"),
+        "slotInfo": slot_info,
         "categoryInfo": {
             **attribute.get("modbusCategoryInfo", {}),
             "channels": channel_data.get("channels", []),
