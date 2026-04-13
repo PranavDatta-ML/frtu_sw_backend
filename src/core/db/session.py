@@ -1,8 +1,7 @@
+import asyncio
 from src import Settings
-from sqlalchemy import create_engine
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import create_async_engine, async_scoped_session, async_sessionmaker
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import sessionmaker, scoped_session
 from sqlalchemy.ext.declarative import declarative_base
 
 
@@ -41,8 +40,8 @@ class DatabaseSession:
         for bind_key, conn_str in settings.DATABASE_BINDS.items():
             engine = create_async_engine(conn_str)
             cls._engines[bind_key] = engine
-            session_factory = sessionmaker(autocommit=False, autoflush=False, bind=engine, class_=AsyncSession)
-            cls._sessions[bind_key] = scoped_session(session_factory)
+            session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+            cls._sessions[bind_key] = async_scoped_session(session_factory, scopefunc=asyncio.current_task)
 
     @classmethod
     async def create_all(cls):

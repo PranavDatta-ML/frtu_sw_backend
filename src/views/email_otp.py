@@ -5,6 +5,7 @@ from src.models.frtu_user_assignment import FRTUUserAssignment
 from src.models.frtu_users import FRTUUsers
 from src.schemas.auth import OTPSendRequest, OTPVerifyRequest, ResetConfirmBody, ResetRequestBody
 from src.utils.jwt_tokens import create_access_token, create_refresh_token
+from src.views.frtu_users import read_user_permissions
 
 
 async def send_otp_login(request: OTPSendRequest):
@@ -106,7 +107,8 @@ async def verify_otp_login(request: OTPVerifyRequest):
             "role": role_name
         }
     )
-
+    permissions_response = await read_user_permissions(user.id)
+    permissions = permissions_response["data"]["permissions"]
     return {
         "http_code": 200,
         "code": "OK",
@@ -119,7 +121,8 @@ async def verify_otp_login(request: OTPVerifyRequest):
         "role_id": role_id,
         "role_name": role_name,
         "name": user.name,
-        "email": user.email
+        "email": user.email,
+        "permissions": permissions
     }
 
 

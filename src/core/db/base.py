@@ -55,15 +55,15 @@ class ModelAdmin:
             log.info(f'Insert query with attrs={str(kwargs)} extra={str(extra)}')
             result = await session.execute(query)
             await session.commit()
-            # return cls(**result.fetchone()._asdict())
             row = result.fetchone()._asdict()
-            await session.close()   # ← IMPORTANT
             return cls(**row)
         except Exception as e:
             await session.rollback()
             log.error(f'Failed insert query due to error={str(e)} in {cls.__class__.__name__} '
                       f'with attrs={str(kwargs)} extra={str(extra)}')
             raise Exception(str(e))
+        finally:
+            await session.remove()
 
     @classmethod
     async def bulk_insert(cls, records, extra={}):
@@ -87,6 +87,8 @@ class ModelAdmin:
             log.error(f'Failed bulk insert due to error={str(e)} in {cls.__class__.__name__} '
                       f'with records={str(records)} extra={str(extra)}')
             raise Exception(str(e))
+        finally:
+            await session.remove()
 
     @classmethod
     async def update(cls, extra={}, conditions={}, **kwargs):
@@ -125,7 +127,8 @@ class ModelAdmin:
             log.error(f'Failed update query due to error={str(e)} in {cls.__class__.__name__} '
                       f'with attrs={str(kwargs)} extra={str(extra)}')
             raise e
-        return session
+        finally:
+            await session.remove()
 
     @classmethod
     async def bulk_update(cls, updates, conditions, extra={}):
@@ -155,7 +158,8 @@ class ModelAdmin:
             await session.rollback()
             log.error(f'Failed bulk update due to error={str(e)} extra={str(extra)}')
             raise Exception(str(e))
-        return session
+        finally:
+            await session.remove()
 
     # @classmethod
     # async def select(cls, extra={}, columns=['*'], use_or=False, **conditions):
@@ -260,6 +264,8 @@ class ModelAdmin:
             log.error(f"Failed select query due to error={str(e)} extra={str(extra)}")
             await session.rollback()
             raise e
+        finally:
+            await session.remove()
 
 
     @classmethod
@@ -293,4 +299,5 @@ class ModelAdmin:
             log.error(f'Failed to delete due to error={str(e)} extra={str(extra)}')
             await session.rollback()
             raise Exception(str(e))
-        return session
+        finally:
+            await session.remove()

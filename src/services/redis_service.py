@@ -32,11 +32,11 @@ redis_client = redis.Redis(
 )
 
 SES_CONFIG = {
-    "host": "email-smtp.ap-south-1.amazonaws.com",
-    "port": "587",
-    "username": "***REMOVED-AWS-ACCESS-KEY***",
-    "password": "***REMOVED-AWS-SECRET-KEY***",
-    "from_email": "message-noreply@kimbal.io"
+    "host": settings.SES_HOST,
+    "port": settings.SES_PORT,
+    "username": settings.SES_USERNAME,
+    "password": settings.SES_PASSWORD,
+    "from_email": settings.SES_FROM_EMAIL
 }
 
 async def generate_unique_otp(length=4):
@@ -149,7 +149,7 @@ async def generate_reset_token(email: str):
 
 
 async def send_reset_email(email: str, token: str):
-    reset_link = f"http://localhost:3000/reset-password/{token}"
+    reset_link = f"{settings.FRONTEND_BASE_URL}/reset-password/{token}"
 
     # html_path = r"D:\KMP FRTU Configurator\frtu_config_backend_v1\src\templates\email\reset_password_email_template.html"
     html_path = BASE_DIR / "templates" / "email" / "reset_password_email_template.html"

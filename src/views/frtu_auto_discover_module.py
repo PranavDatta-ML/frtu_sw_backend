@@ -178,7 +178,13 @@ async def auto_discover_modules(payload: AutoDiscoverRequest, user_id: UUID):
             f"FRTU device '{device_name}' is not reachable"
         )
 
-    devids = frtu_client.parse_devids_conf()
+    try:
+        devids = frtu_client.parse_devids_conf()
+    # except FileNotFoundError as e:
+    #     return HttpStatusCode.SERVICE_UNAVAILABLE.response(str(e))
+
+    except FileNotFoundError:
+        devids = []  # devids.conf not yet created on device; no DI/DO modules
     slot_by_number = await _get_slots_for_device(device_id)
 
     if not slot_by_number:
@@ -215,8 +221,13 @@ async def auto_discover_modules(payload: AutoDiscoverRequest, user_id: UUID):
     desired_di_do: Set[Tuple[int, str]] = set()
 
     for d in devids:
-        logical_slot = int(d["slot"])
-        type_flag = int(d["module_type"])
+        raw_slot = d.get("slot") or d.get("slot_number") or d.get("slot_no")
+        raw_type = d.get("module_type") or d.get("type_flag")
+        if raw_slot is None or raw_type is None:
+            log.warning(f"[AUTO_DISCOVER] Skipping devids entry with unexpected keys: {d}")
+            continue
+        logical_slot = int(raw_slot)
+        type_flag = int(raw_type)
 
         if logical_slot not in slot_by_number:
             continue

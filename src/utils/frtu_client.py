@@ -5,7 +5,7 @@ import requests # type: ignore
 logger = logging.getLogger(__name__)
 
 class FRTUClient:
-    def __init__(self, frtu_ip: str = "10.150.2.247", frtu_port: int = 8000, timeout: int = 10):
+    def __init__(self, frtu_ip: str = "10.150.2.82", frtu_port: int = 8000, timeout: int = 10):
         self.base_url = f"http://{frtu_ip}:{frtu_port}"
         self.timeout = timeout
         self.frtu_ip = frtu_ip
@@ -15,7 +15,8 @@ class FRTUClient:
         try:
             response = requests.get(f"{self.base_url}/health", timeout=5)
             return response.status_code == 200
-        except:
+        except Exception as e:
+            logger.warning(f"FRTU health check failed ({self.frtu_ip}:{self.frtu_port}): {e}")
             return False
     
     def parse_devids_conf(self) -> List[Dict[str, Any]]:
@@ -39,13 +40,19 @@ class FRTUClient:
                 "module_type": module_type
             }
             response = requests.post(
-                f"{self.base_url}/api/config/devids/update", 
-                json=payload, 
+                f"{self.base_url}/api/config/devids/update",
+                json=payload,
                 timeout=self.timeout
             )
-            response.raise_for_status()
+            if response.status_code >= 400:
+                try:
+                    body = response.json()
+                except Exception:
+                    body = response.text
+                logger.error(f"FRTU devids/update returned {response.status_code}: {body}")
+                response.raise_for_status()
             result = response.json()
-            
+
             if result.get("status") == "success":
                 return True
             else:
@@ -117,6 +124,7 @@ class FRTUClient:
                 "deviceid": deviceid,
                 "devicetype": devicetype
             }
+            payload = {k: v for k, v in payload.items() if v is not None}
             response = requests.post(
                 f"{self.base_url}/api/config/ini/update", 
                 json=payload, 
@@ -298,5 +306,5 @@ class FRTUClient:
     #     return response.json()
 
 # Initialize global FRTU client
-frtu_client = FRTUClient(frtu_ip="10.150.2.247", frtu_port=8000)
+frtu_client = FRTUClient(frtu_ip="10.150.2.82", frtu_port=8000)
 # frtu_client = FRTUClient(frtu_ip="127.0.0.1", frtu_port=8000)

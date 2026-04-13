@@ -12,15 +12,16 @@ settings = Settings.get_settings()
 # Initialize FastAPI app with project name and version from settings
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    version=settings.PROJECT_VERSION
+    version=settings.PROJECT_VERSION,
+    redirect_slashes=False
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5500", "http://localhost:3000"],  # Allows all origins
+    allow_origins=settings.CORS_ALLOWED_ORIGINS.split(","),
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=settings.CORS_ALLOWED_METHODS.split(","),
+    allow_headers=settings.CORS_ALLOWED_HEADERS.split(","),
 )
 
 include_router(app)

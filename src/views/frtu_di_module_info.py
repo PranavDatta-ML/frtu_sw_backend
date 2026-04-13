@@ -1,7 +1,10 @@
 import asyncio
+import logging
 from copy import deepcopy
 from typing import Any, Dict, List
 from uuid import UUID, uuid4
+
+logger = logging.getLogger(__name__)
 from fastapi import HTTPException
 from src.models.frtu_devices import FRTUDevices
 from src.models.frtu_module_type import FRTUModuleType
@@ -143,20 +146,30 @@ async def add_di_module_info(
         module_id = module.id
         message = "DI module created successfully"
 
-    await asyncio.to_thread(
-        frtu_client.update_devids_conf,
-        slot_number,
-        "DI",
-    )
+    frtu_warning = None
+    try:
+        await asyncio.to_thread(
+            frtu_client.update_devids_conf,
+            slot_number,
+            "DI",
+        )
+    except Exception as e:
+        logger.warning(f"FRTU devids update failed for slot {slot_number}: {e}")
+        frtu_warning = str(e)
 
     serial_number = general_info.get("serial_number")
     if serial_number:
-        await asyncio.to_thread(
-            update_di_ini_for_module,
-            serial_number,
-            slot_number,
-            updated_channels,
-        )
+        try:
+            await asyncio.to_thread(
+                update_di_ini_for_module,
+                serial_number,
+                slot_number,
+                updated_channels,
+            )
+        except Exception as e:
+            logger.warning(f"FRTU INI update failed for slot {slot_number}: {e}")
+            if frtu_warning is None:
+                frtu_warning = str(e)
 
     return {
         "status": "success",
@@ -166,6 +179,7 @@ async def add_di_module_info(
             "module_id": str(module_id),
             "slot_number": slot_number,
             "configured_channels": len(updated_channels),
+            "frtu_warning": frtu_warning,
         },
     }
 
@@ -499,17 +513,29 @@ async def delete_di_module(device_id: str, device_type: str, sub_module_id: str,
     device_uuid = UUID(device_id)
     module_uuid = UUID(sub_module_id)
 
-    module = (await FRTUModules.select(id=module_uuid))[0]
+    modules = await FRTUModules.select(id=module_uuid)
+    if not modules:
+        return {
+            "status": "success",
+            "message": "DI module already deleted",
+        }
+    module = modules[0]
 
     slot = (await FRTUSlots.select(id=module.slot_id))[0]
     slot_number = int(slot.name)
 
     await FRTUModules.delete(conditions={"id": module_uuid})
 
-    await asyncio.to_thread(frtu_client.delete_di_module, slot_number)
+    frtu_warning = None
+    try:
+        await asyncio.to_thread(frtu_client.delete_di_module, slot_number)
+    except Exception as e:
+        logger.warning(f"FRTU delete-di-module failed for slot {slot_number}: {e}")
+        frtu_warning = str(e)
 
     return {
         "status": "success",
-        "message": f"DI Module at slot {slot_number} deleted successfully"
+        "message": f"DI Module at slot {slot_number} deleted successfully",
+        **({"frtu_warning": frtu_warning} if frtu_warning else {}),
     }
 

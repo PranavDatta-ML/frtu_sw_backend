@@ -29,6 +29,7 @@ async def api_auto_discover_modules(
 
 
 @router.get("/auto_discover_modules_msg")
+@router.get("/auto_discover_modules_msg/", include_in_schema=False)
 async def api_auto_discover_modules_msg(
     a_name: str = Query(..., alias="a_name"),
     a_type: FrtuDeviceType = Query(..., alias="a_type"),

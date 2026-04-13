@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     CORS_ALLOWED_ORIGINS: str = Field(default="*", env="CORS_ALLOWED_ORIGINS")
     CORS_ALLOWED_METHODS: str = Field(default="*", env="CORS_ALLOWED_METHODS")
     CORS_ALLOWED_HEADERS: str = Field(default="*", env="CORS_ALLOWED_HEADERS")
+    FRONTEND_BASE_URL: str = Field(default="http://localhost:3000", env="FRONTEND_BASE_URL")
 
     # Celery configuration
     CELERY_BROKER_URL: str = Field(default="amqp://guest:guest@127.0.0.1:5672", env="CELERY_BROKER_URL")
