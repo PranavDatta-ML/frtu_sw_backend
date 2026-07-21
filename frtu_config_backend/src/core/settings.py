@@ -33,10 +33,7 @@ class Settings(BaseSettings):
     CELERY_QUEUE_NAMES: str = Field(default='http', env="ALLOWED_HOOK_PROTOCOLS")
 
     # Database binds
-    DATABASE_URI: str = Field(
-        # default="postgresql+asyncpg://postgres:***REMOVED-DB-PASSWORD-2***@172.29.3.30:55432/frtu_conf_db",
-        default="postgresql+asyncpg://postgres:***REMOVED-DB-PASSWORD-2***@127.0.0.1:55432/frtu_conf_db",
-        env="DATABASE_URI")
+    DATABASE_URI: str = Field(default="", env="DATABASE_URI")
 
     JWT_SECRET_KEY: str = Field(default="***REMOVED-JWT-SECRET-2***", env="JWT_SECRET")
 
