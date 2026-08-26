@@ -18,13 +18,11 @@ from src.services.role import _get_role_permissions, _get_role_permissions_map
 from src.services.user_access import is_child_of
 from src.utils.jwt_tokens import create_access_token, decode_access_token
 from src.utils.schema import verify_schema
-from src.utils.security import generate_salt, hash_password
+from src.utils.security import generate_salt, generate_temp_password, hash_password
 from src import HttpStatusCode
 from datetime import UTC
 from collections import defaultdict
 
-
-DEFAULT_PASSWORD = "***REMOVED-DEFAULT-PASSWORD***"
 
 async def create_user(data: FRTUUserAdd, creator_id: UUID | None = None):
     if creator_id is not None:
@@ -66,7 +64,11 @@ async def create_user(data: FRTUUserAdd, creator_id: UUID | None = None):
     if await FRTUUsers.select(mobile_no=data.mobile_no):
         return HttpStatusCode.BAD_REQUEST.response("User with this mobile number already exists")
 
-    raw_password = data.password or DEFAULT_PASSWORD
+    generated_password = None
+    if data.password:
+        raw_password = data.password
+    else:
+        raw_password = generated_password = generate_temp_password()
     salt = generate_salt()
     password_hash = hash_password(raw_password, salt)
 
@@ -110,6 +112,7 @@ async def create_user(data: FRTUUserAdd, creator_id: UUID | None = None):
             "creation_time": user.creation_time,
             "attribute": user.attribute,
             "role_id": str(data.role_id),
+            "temp_password": generated_password,
         },
     }
 
@@ -590,7 +593,11 @@ async def add_user_api(data: FRTUUserCreate, creator_id: UUID | None = None):
     if existing:
         raise HTTPException(status_code=400, detail="User with this mobile number already exists")
 
-    raw_password = data.password or DEFAULT_PASSWORD
+    generated_password = None
+    if data.password:
+        raw_password = data.password
+    else:
+        raw_password = generated_password = generate_temp_password()
     salt = generate_salt()
     password_hash = hash_password(raw_password, salt)
 
@@ -628,6 +635,7 @@ async def add_user_api(data: FRTUUserCreate, creator_id: UUID | None = None):
         "email": user.email,
         "mobile_no": user.mobile_no,
         "role_id": str(data.role_id),
+        "temp_password": generated_password,
     }
 
     return resp
