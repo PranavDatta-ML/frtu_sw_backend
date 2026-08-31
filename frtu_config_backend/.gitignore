@@ -17,3 +17,6 @@ venv/
 .env
 .sample.env
 src.zip
+
+# Stray device config exports (contain live telemetry access tokens)
+src/config/mb_config*.ini

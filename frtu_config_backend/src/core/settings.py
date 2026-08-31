@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     # Database binds
     DATABASE_URI: str = Field(default="", env="DATABASE_URI")
 
-    JWT_SECRET_KEY: str = Field(default="***REMOVED-JWT-SECRET-2***", env="JWT_SECRET")
+    JWT_SECRET_KEY: str = Field(default="", env="JWT_SECRET")
 
     JWT_ALGORITHM: str = Field(default="HS256", env="JWT_ALGORITHM")
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=30, env="JWT_ALGORITHM")
